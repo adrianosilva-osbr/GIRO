@@ -1,0 +1,126 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String          @id @default(cuid())
+  name         String
+  email        String          @unique
+  passwordHash String
+  avatarColor  String          @default("#0C66E4")
+  createdAt    DateTime        @default(now())
+  memberships  ProjectMember[]
+  ledProjects  Project[]       @relation("ProjectLead")
+  assigned     Issue[]         @relation("Assignee")
+  reported     Issue[]         @relation("Reporter")
+  comments     Comment[]
+  activities   Activity[]
+}
+
+model Project {
+  id            String          @id @default(cuid())
+  key           String          @unique
+  name          String
+  description   String          @default("")
+  leadId        String
+  lead          User            @relation("ProjectLead", fields: [leadId], references: [id])
+  issueCounter  Int             @default(0)
+  sprintCounter Int             @default(0)
+  createdAt     DateTime        @default(now())
+  members       ProjectMember[]
+  issues        Issue[]
+  sprints       Sprint[]
+}
+
+// role: ADMIN | MEMBER
+model ProjectMember {
+  projectId String
+  userId    String
+  role      String   @default("MEMBER")
+  createdAt DateTime @default(now())
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([projectId, userId])
+}
+
+// status: PLANNED | ACTIVE | CLOSED
+model Sprint {
+  id          String    @id @default(cuid())
+  projectId   String
+  project     Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name        String
+  goal        String    @default("")
+  status      String    @default("PLANNED")
+  startDate   DateTime?
+  endDate     DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  issues      Issue[]
+}
+
+// type: EPIC | STORY | TASK | BUG | SUBTASK
+// status: TODO | IN_PROGRESS | IN_REVIEW | DONE
+// priority: HIGHEST | HIGH | MEDIUM | LOW | LOWEST
+// labels: stored as ",a,b," so a label can be matched exactly with `contains`
+model Issue {
+  id          String     @id @default(cuid())
+  projectId   String
+  project     Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  number      Int
+  key         String     @unique
+  title       String
+  description String     @default("")
+  type        String     @default("TASK")
+  status      String     @default("TODO")
+  priority    String     @default("MEDIUM")
+  storyPoints Int?
+  labels      String     @default("")
+  dueDate     DateTime?
+  rank        Float      @default(0)
+  assigneeId  String?
+  assignee    User?      @relation("Assignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  reporterId  String
+  reporter    User       @relation("Reporter", fields: [reporterId], references: [id])
+  sprintId    String?
+  sprint      Sprint?    @relation(fields: [sprintId], references: [id], onDelete: SetNull)
+  parentId    String?
+  parent      Issue?     @relation("IssueParent", fields: [parentId], references: [id], onDelete: SetNull)
+  children    Issue[]    @relation("IssueParent")
+  comments    Comment[]
+  activities  Activity[]
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@unique([projectId, number])
+}
+
+model Comment {
+  id        String   @id @default(cuid())
+  issueId   String
+  issue     Issue    @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  body      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// action: created | updated | commented
+model Activity {
+  id        String   @id @default(cuid())
+  issueId   String
+  issue     Issue    @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  action    String
+  field     String?
+  fromValue String?
+  toValue   String?
+  createdAt DateTime @default(now())
+}

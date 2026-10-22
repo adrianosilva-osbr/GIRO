@@ -1,0 +1,27 @@
+{
+  "name": "giro",
+  "private": true,
+  "description": "GIRO — gestão de projetos e issues no estilo Jira",
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "setup": "npm install && npm run db:setup -w server",
+    "dev": "concurrently -n api,web -c blue,green \"npm run dev -w server\" \"npm run dev -w client\"",
+    "build": "npm run build -w server && npm run build -w client",
+    "start": "npm run start -w server",
+    "test": "npm test -w server",
+    "typecheck": "npm run typecheck -w server && npm run typecheck -w client"
+  },
+  "devDependencies": {
+    "concurrently": "9.1.0"
+  },
+  "allowScripts": {
+    "@prisma/client@5.22.0": true,
+    "prisma@5.22.0": true,
+    "@prisma/engines@5.22.0": true,
+    "esbuild@0.23.1": true,
+    "esbuild@0.21.5": true
+  }
+}
