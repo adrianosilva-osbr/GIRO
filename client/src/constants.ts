@@ -1,7 +1,16 @@
-import type { IssueType, Priority, Status } from './types';
+import type { Category, IssueType, Priority, StatusRef } from './types';
 
-export const STATUSES: Status[] = ['TODO', 'IN_PROGRESS', 'IN_REVIEW', 'DONE'];
-export const STATUS_LABEL: Record<Status, string> = {
+export const CATEGORIES: Category[] = ['TODO', 'IN_PROGRESS', 'DONE'];
+export const CATEGORY_LABEL: Record<Category, string> = {
+  TODO: 'A fazer',
+  IN_PROGRESS: 'Em andamento',
+  DONE: 'Concluído',
+};
+
+export const isDone = (i: { statusRef?: StatusRef | null }) => i.statusRef?.category === 'DONE';
+
+/** Names of the original fixed statuses; older history and notifications stored these codes. */
+export const STATUS_LABEL: Record<string, string> = {
   TODO: 'A fazer',
   IN_PROGRESS: 'Em andamento',
   IN_REVIEW: 'Em revisão',
@@ -36,6 +45,7 @@ export const FIELD_LABEL: Record<string, string> = {
   storyPoints: 'story points',
   labels: 'etiquetas',
   dueDate: 'data limite',
+  startDate: 'data de início',
   assignee: 'responsável',
   sprint: 'sprint',
   parent: 'issue pai',
@@ -44,10 +54,10 @@ export const FIELD_LABEL: Record<string, string> = {
 /** Translates raw activity values (enum codes) into display text. */
 export function displayValue(field: string, value: string | null): string {
   if (value == null || value === '') return 'Nenhum';
-  if (field === 'status') return STATUS_LABEL[value as Status] ?? value;
+  if (field === 'status') return STATUS_LABEL[value] ?? value;
   if (field === 'priority') return PRIORITY_LABEL[value as Priority] ?? value;
   if (field === 'type') return TYPE_LABEL[value as IssueType] ?? value;
-  if (field === 'dueDate') return formatDate(value);
+  if (field === 'dueDate' || field === 'startDate') return formatDate(value);
   if (field === 'labels') return value.split(',').join(', ');
   return value;
 }

@@ -15,12 +15,18 @@ declare global {
   }
 }
 
-export function signToken(userId: string) {
-  return jwt.sign({ sub: userId }, SECRET, { expiresIn: '7d' });
+/** `v` is the user's tokenVersion; bumping it (password change/reset) revokes every older token. */
+export function signToken(user: Pick<User, 'id' | 'tokenVersion'>) {
+  return jwt.sign({ sub: user.id, v: user.tokenVersion }, SECRET, { expiresIn: '7d' });
 }
 
 export function publicUser(u: Pick<User, 'id' | 'name' | 'email' | 'avatarColor'>) {
   return { id: u.id, name: u.name, email: u.email, avatarColor: u.avatarColor };
+}
+
+/** What a user may see about their own account. */
+export function selfUser(u: User) {
+  return { ...publicUser(u), emailNotifications: u.emailNotifications };
 }
 
 export const userSelect = { id: true, name: true, email: true, avatarColor: true } as const;
@@ -38,6 +44,9 @@ export async function requireAuth(req: Request, _res: Response, next: NextFuncti
     }
     const user = await prisma.user.findUnique({ where: { id: String(payload.sub) } });
     if (!user) throw new HttpError(401, 'Usuário não encontrado');
+    if ((payload.v ?? 0) !== user.tokenVersion) {
+      throw new HttpError(401, 'Sua senha foi alterada, faça login novamente');
+    }
     req.user = user;
     next();
   } catch (e) {

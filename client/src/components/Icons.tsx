@@ -60,7 +60,7 @@ export function PriorityIcon({ priority, size = 16 }: { priority: Priority; size
 
 type IconName =
   | 'search' | 'plus' | 'board' | 'backlog' | 'list' | 'settings' | 'close' | 'chevron' | 'trash'
-  | 'home' | 'folder' | 'filter' | 'more' | 'logout' | 'check' | 'edit';
+  | 'home' | 'folder' | 'filter' | 'more' | 'logout' | 'check' | 'edit' | 'timeline' | 'chart';
 
 const PATHS: Record<IconName, string> = {
   search: 'M10.5 10.5 14 14M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0Z',
@@ -79,6 +79,8 @@ const PATHS: Record<IconName, string> = {
   logout: 'M6 3H3v10h3M10 5l3 3-3 3M13 8H6',
   check: 'm3.5 8.5 3 3 6-7',
   edit: 'M10.5 3 13 5.5 6 12.5H3.5V10z',
+  timeline: 'M2.5 4h6M5 8h7M3.5 12h5M2.5 2v12',
+  chart: 'M2.5 13.5h11M4.5 11V8M8 11V4.5M11.5 11V6.5',
 };
 
 export function Icon({ name, size = 16 }: { name: IconName; size?: number }) {

@@ -5,6 +5,7 @@ import { useInvalidateWork, useIssues, useOpenIssue, useProject, useProjects, us
 import type { Issue, IssueType, Priority } from '../types';
 import { ErrorText, Field, Modal } from './ui';
 import { useToast } from './Toast';
+import { MarkdownEditor } from './MarkdownEditor';
 
 export interface CreateDefaults {
   projectKey?: string;
@@ -157,9 +158,16 @@ function CreateIssueModal({ defaults, onClose }: { defaults: CreateDefaults; onC
         <Field label="Resumo *">
           <input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="O que precisa ser feito?" required />
         </Field>
-        <Field label="Descrição">
-          <textarea rows={5} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Adicione detalhes, critérios de aceite…" />
-        </Field>
+        <div className="field">
+          <span className="field-label">Descrição</span>
+          <MarkdownEditor
+            rows={5}
+            value={description}
+            onChange={setDescription}
+            members={project?.members?.map((m) => m.user)}
+            placeholder="Adicione detalhes, critérios de aceite… Use @ para mencionar alguém."
+          />
+        </div>
         <div className="form-row">
           <Field label="Prioridade">
             <select value={priority} onChange={(e) => setPriority(e.target.value as Priority)}>

@@ -7,19 +7,21 @@ import {
   FIELD_LABEL,
   PRIORITIES,
   PRIORITY_LABEL,
-  STATUSES,
-  STATUS_LABEL,
   TYPE_LABEL,
   displayValue,
   formatDateTime,
+  isDone,
   timeAgo,
 } from '../constants';
 import { useInvalidateWork, useIssue, useIssues, useOpenIssue, useProject, useSprints, useUpdateIssue } from '../hooks';
-import type { Activity, Comment, IssueDetail as IssueDetailT, IssueType, Priority, Status } from '../types';
+import type { Activity, Comment, CustomField, IssueDetail as IssueDetailT, IssueType, Priority, User } from '../types';
 import { Icon, IssueTypeIcon, PriorityIcon } from './Icons';
 import { Avatar, ErrorText, Modal, Spinner, StatusLozenge } from './ui';
 import { useCreateIssue } from './CreateIssue';
 import { useToast } from './Toast';
+import { Markdown } from './Markdown';
+import { MarkdownEditor } from './MarkdownEditor';
+import { AttachmentsSection, LinksSection, WatchButton, useUploadToIssue } from './IssueExtras';
 
 export function IssueDetailModal({ issueKey }: { issueKey: string }) {
   const openIssue = useOpenIssue();
@@ -67,6 +69,7 @@ function IssueDetailBody({ issue, onClose }: { issue: IssueDetailT; onClose(): v
   };
 
   const isAdmin = project?.myRole === 'ADMIN';
+  const members = project?.members?.map((m) => m.user) ?? [];
 
   return (
     <div className="issue-detail">
@@ -89,6 +92,7 @@ function IssueDetailBody({ issue, onClose }: { issue: IssueDetailT; onClose(): v
           </span>
         </nav>
         <div className="issue-detail-actions">
+          <WatchButton issue={issue} me={me} />
           <button className="btn-icon" title="Excluir issue" onClick={remove}>
             <Icon name="trash" />
           </button>
@@ -101,20 +105,23 @@ function IssueDetailBody({ issue, onClose }: { issue: IssueDetailT; onClose(): v
       <div className="issue-detail-grid">
         <div className="issue-main">
           <EditableTitle value={issue.title} onSave={(title) => save({ title })} />
-          <Description key={issue.id + issue.updatedAt} value={issue.description} onSave={(description) => save({ description })} />
+          <Description issue={issue} members={members} onSave={(description) => save({ description })} />
+          <AttachmentsSection issue={issue} meId={me.id} isAdmin={isAdmin} />
           {issue.type !== 'SUBTASK' && <ChildIssues issue={issue} />}
-          <ActivitySection issue={issue} meId={me.id} isAdmin={isAdmin} />
+          <LinksSection issue={issue} />
+          <ActivitySection issue={issue} members={members} meId={me.id} isAdmin={isAdmin} />
         </div>
 
         <aside className="issue-side">
           <select
-            className={`status-select status-${issue.status.toLowerCase()}`}
+            className={`status-select status-${(issue.statusRef?.category ?? 'TODO').toLowerCase()}`}
             value={issue.status}
-            onChange={(e) => save({ status: e.target.value as Status })}
+            onChange={(e) => save({ status: e.target.value })}
+            aria-label="Status"
           >
-            {STATUSES.map((s) => (
-              <option key={s} value={s}>
-                {STATUS_LABEL[s]}
+            {(project?.statuses ?? (issue.statusRef ? [issue.statusRef] : [])).map((s) => (
+              <option key={s.key} value={s.key}>
+                {s.name}
               </option>
             ))}
           </select>
@@ -224,14 +231,37 @@ function IssueDetailBody({ issue, onClose }: { issue: IssueDetailT; onClose(): v
                 </div>
               )}
             </Detail>
+            <Detail label="Data de início">
+              <input
+                type="date"
+                value={issue.startDate?.slice(0, 10) ?? ''}
+                max={issue.dueDate?.slice(0, 10)}
+                onChange={(e) => save({ startDate: e.target.value || null })}
+              />
+            </Detail>
             <Detail label="Data limite">
               <input
                 type="date"
                 value={issue.dueDate?.slice(0, 10) ?? ''}
+                min={issue.startDate?.slice(0, 10)}
                 onChange={(e) => save({ dueDate: e.target.value || null })}
               />
             </Detail>
           </div>
+          {project?.customFields && project.customFields.length > 0 && (
+            <div className="details-box">
+              <h4>Campos personalizados</h4>
+              {project.customFields.map((f) => (
+                <Detail key={f.id} label={f.name}>
+                  <CustomFieldInput
+                    field={f}
+                    value={issue.customValues.find((v) => v.fieldId === f.id)?.value ?? ''}
+                    onSave={(value) => save({ customFields: { [f.id]: value === '' ? null : value } })}
+                  />
+                </Detail>
+              ))}
+            </div>
+          )}
           <div className="meta-dates muted small">
             <div>Criado {formatDateTime(issue.createdAt)}</div>
             <div>Atualizado {formatDateTime(issue.updatedAt)}</div>
@@ -239,6 +269,29 @@ function IssueDetailBody({ issue, onClose }: { issue: IssueDetailT; onClose(): v
         </aside>
       </div>
     </div>
+  );
+}
+
+function CustomFieldInput({ field, value, onSave }: { field: CustomField; value: string; onSave(v: string): void }) {
+  if (field.type === 'SELECT') {
+    return (
+      <select value={value} onChange={(e) => onSave(e.target.value)}>
+        <option value="">Nenhum</option>
+        {field.options.map((o) => <option key={o} value={o}>{o}</option>)}
+      </select>
+    );
+  }
+  if (field.type === 'DATE') {
+    return <input type="date" value={value} onChange={(e) => onSave(e.target.value)} />;
+  }
+  return (
+    <BlurInput
+      type={field.type === 'NUMBER' ? 'number' : 'text'}
+      step="any"
+      value={value}
+      placeholder="Nenhum"
+      onSave={onSave}
+    />
   );
 }
 
@@ -302,27 +355,52 @@ function EditableTitle({ value, onSave }: { value: string; onSave(v: string): vo
   );
 }
 
-function Description({ value, onSave }: { value: string; onSave(v: string): void }) {
+function Description({ issue, members, onSave }: { issue: IssueDetailT; members: User[]; onSave(v: string): void }) {
+  const value = issue.description;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
+  const upload = useUploadToIssue(issue.key);
+  const save = () => {
+    if (draft !== value) onSave(draft);
+    setEditing(false);
+  };
+  const cancel = () => {
+    setDraft(value);
+    setEditing(false);
+  };
   return (
     <section className="issue-section">
       <h3>Descrição</h3>
       {editing ? (
         <div>
-          <textarea autoFocus rows={8} value={draft} onChange={(e) => setDraft(e.target.value)} />
+          <MarkdownEditor
+            autoFocus
+            rows={10}
+            value={draft}
+            onChange={setDraft}
+            members={members}
+            onUpload={upload}
+            attachments={issue.attachments}
+            onSubmit={save}
+            onCancel={cancel}
+            placeholder="Descreva a issue. Cole prints direto aqui."
+          />
           <div className="row gap-sm mt-sm">
-            <button className="btn btn-primary" onClick={() => { onSave(draft); setEditing(false); }}>
-              Salvar
-            </button>
-            <button className="btn btn-subtle" onClick={() => { setDraft(value); setEditing(false); }}>
-              Cancelar
-            </button>
+            <button className="btn btn-primary" onClick={save}>Salvar</button>
+            <button className="btn btn-subtle" onClick={cancel}>Cancelar</button>
           </div>
         </div>
       ) : (
-        <div className={`description ${value ? '' : 'placeholder'}`} onClick={() => setEditing(true)}>
-          {value || 'Adicionar uma descrição…'}
+        <div
+          className={`description ${value ? '' : 'placeholder'}`}
+          onClick={(e) => {
+            // Clicking a link or image inside the text shouldn't switch to edit mode.
+            if ((e.target as HTMLElement).closest('a, img')) return;
+            setDraft(value);
+            setEditing(true);
+          }}
+        >
+          {value ? <Markdown source={value} attachments={issue.attachments} /> : 'Adicionar uma descrição…'}
         </div>
       )}
     </section>
@@ -337,7 +415,7 @@ function ChildIssues({ issue }: { issue: IssueDetailT }) {
   const [adding, setAdding] = useState(false);
   const [title, setTitle] = useState('');
   const isEpic = issue.type === 'EPIC';
-  const done = issue.children.filter((c) => c.status === 'DONE').length;
+  const done = issue.children.filter(isDone).length;
   const total = issue.children.length;
 
   const addSubtask = async (e: FormEvent) => {
@@ -379,11 +457,11 @@ function ChildIssues({ issue }: { issue: IssueDetailT }) {
         {issue.children.map((c) => (
           <li key={c.id} onClick={() => openIssue(c.key)}>
             <IssueTypeIcon type={c.type} />
-            <span className={`key ${c.status === 'DONE' ? 'done' : ''}`}>{c.key}</span>
+            <span className={`key ${isDone(c) ? 'done' : ''}`}>{c.key}</span>
             <span className="child-title">{c.title}</span>
             <PriorityIcon priority={c.priority} />
             <Avatar user={c.assignee} size={22} />
-            <StatusLozenge status={c.status} />
+            <StatusLozenge status={c.statusRef} />
           </li>
         ))}
       </ul>
@@ -401,7 +479,7 @@ function ChildIssues({ issue }: { issue: IssueDetailT }) {
   );
 }
 
-function ActivitySection({ issue, meId, isAdmin }: { issue: IssueDetailT; meId: string; isAdmin: boolean }) {
+function ActivitySection({ issue, members, meId, isAdmin }: { issue: IssueDetailT; members: User[]; meId: string; isAdmin: boolean }) {
   const [tab, setTab] = useState<'comments' | 'history'>('comments');
   return (
     <section className="issue-section">
@@ -415,7 +493,7 @@ function ActivitySection({ issue, meId, isAdmin }: { issue: IssueDetailT; meId: 
         </button>
       </div>
       {tab === 'comments' ? (
-        <Comments issue={issue} meId={meId} isAdmin={isAdmin} />
+        <Comments issue={issue} members={members} meId={meId} isAdmin={isAdmin} />
       ) : (
         <ul className="history">
           {issue.activities.map((a) => (
@@ -432,11 +510,15 @@ function HistoryItem({ activity: a }: { activity: Activity }) {
   if (a.action === 'created') text = 'criou a issue';
   else if (a.action === 'commented') text = 'adicionou um comentário';
   else if (a.field === 'description') text = 'atualizou a descrição';
-  else {
+  else if (a.field === 'attachment') {
+    text = a.toValue ? <>anexou <b>{a.toValue}</b></> : <>removeu o anexo <span className="history-from">{a.fromValue}</span></>;
+  } else if (a.field === 'link') {
+    text = a.toValue ? <>vinculou: esta issue <b>{a.toValue}</b></> : <>removeu o vínculo <span className="history-from">{a.fromValue}</span></>;
+  } else {
     const field = a.field ?? '';
     text = (
       <>
-        alterou <b>{FIELD_LABEL[field] ?? field}</b>:{' '}
+        alterou <b>{field.startsWith('custom:') ? field.slice(7) : (FIELD_LABEL[field] ?? field)}</b>:{' '}
         <span className="history-from">{displayValue(field, a.fromValue)}</span> →{' '}
         <span className="history-to">{displayValue(field, a.toValue)}</span>
       </>
@@ -455,55 +537,88 @@ function HistoryItem({ activity: a }: { activity: Activity }) {
   );
 }
 
-function Comments({ issue, meId, isAdmin }: { issue: IssueDetailT; meId: string; isAdmin: boolean }) {
+function Comments({ issue, members, meId, isAdmin }: { issue: IssueDetailT; members: User[]; meId: string; isAdmin: boolean }) {
   const [body, setBody] = useState('');
-  const [focused, setFocused] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
   const invalidate = useInvalidateWork();
+  const upload = useUploadToIssue(issue.key);
   const toast = useToast();
 
-  const add = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!body.trim()) return;
+  const add = async () => {
+    if (!body.trim() || saving) return;
+    setSaving(true);
     try {
       await api(`/issues/${issue.key}/comments`, { method: 'POST', body: { body } });
       setBody('');
-      setFocused(false);
+      setOpen(false);
       await invalidate();
     } catch (err) {
       toast((err as Error).message, 'error');
+    } finally {
+      setSaving(false);
     }
   };
 
   return (
     <div>
-      <form onSubmit={add} className="comment-form">
-        <textarea
-          rows={focused ? 4 : 1}
-          value={body}
-          onFocus={() => setFocused(true)}
-          onChange={(e) => setBody(e.target.value)}
-          placeholder="Adicionar um comentário…"
-        />
-        {focused && (
+      {open ? (
+        <div className="comment-form">
+          <MarkdownEditor
+            autoFocus
+            rows={4}
+            value={body}
+            onChange={setBody}
+            members={members}
+            onUpload={upload}
+            attachments={issue.attachments}
+            onSubmit={add}
+            onCancel={() => setOpen(false)}
+            placeholder="Adicionar um comentário… Use @ para mencionar alguém."
+          />
           <div className="row gap-sm mt-sm">
-            <button className="btn btn-primary" type="submit" disabled={!body.trim()}>Salvar</button>
-            <button className="btn btn-subtle" type="button" onClick={() => { setBody(''); setFocused(false); }}>Cancelar</button>
+            <button className="btn btn-primary" onClick={add} disabled={!body.trim() || saving}>Salvar</button>
+            <button className="btn btn-subtle" onClick={() => { setBody(''); setOpen(false); }}>Cancelar</button>
           </div>
-        )}
-      </form>
+        </div>
+      ) : (
+        <button className="comment-placeholder" onClick={() => setOpen(true)}>
+          Adicionar um comentário…
+        </button>
+      )}
       <ul className="comments">
         {[...issue.comments].reverse().map((c) => (
-          <CommentItem key={c.id} comment={c} canEdit={c.authorId === meId} canDelete={c.authorId === meId || isAdmin} />
+          <CommentItem
+            key={c.id}
+            comment={c}
+            issue={issue}
+            members={members}
+            canEdit={c.authorId === meId}
+            canDelete={c.authorId === meId || isAdmin}
+          />
         ))}
       </ul>
     </div>
   );
 }
 
-function CommentItem({ comment, canEdit, canDelete }: { comment: Comment; canEdit: boolean; canDelete: boolean }) {
+function CommentItem({
+  comment,
+  issue,
+  members,
+  canEdit,
+  canDelete,
+}: {
+  comment: Comment;
+  issue: IssueDetailT;
+  members: User[];
+  canEdit: boolean;
+  canDelete: boolean;
+}) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(comment.body);
   const invalidate = useInvalidateWork();
+  const upload = useUploadToIssue(issue.key);
   const toast = useToast();
 
   const run = async (fn: () => Promise<unknown>) => {
@@ -514,6 +629,12 @@ function CommentItem({ comment, canEdit, canDelete }: { comment: Comment; canEdi
       toast((err as Error).message, 'error');
     }
   };
+
+  const save = () =>
+    run(async () => {
+      await api(`/comments/${comment.id}`, { method: 'PATCH', body: { body: draft } });
+      setEditing(false);
+    });
 
   return (
     <li>
@@ -528,21 +649,28 @@ function CommentItem({ comment, canEdit, canDelete }: { comment: Comment; canEdi
         </div>
         {editing ? (
           <>
-            <textarea rows={3} value={draft} onChange={(e) => setDraft(e.target.value)} />
+            <MarkdownEditor
+              autoFocus
+              rows={3}
+              value={draft}
+              onChange={setDraft}
+              members={members}
+              onUpload={upload}
+              attachments={issue.attachments}
+              onSubmit={save}
+              onCancel={() => setEditing(false)}
+            />
             <div className="row gap-sm mt-sm">
-              <button className="btn btn-primary" onClick={() => run(async () => {
-                await api(`/comments/${comment.id}`, { method: 'PATCH', body: { body: draft } });
-                setEditing(false);
-              })}>Salvar</button>
+              <button className="btn btn-primary" onClick={save}>Salvar</button>
               <button className="btn btn-subtle" onClick={() => setEditing(false)}>Cancelar</button>
             </div>
           </>
         ) : (
-          <div className="comment-body">{comment.body}</div>
+          <Markdown className="comment-body" source={comment.body} attachments={issue.attachments} />
         )}
         {!editing && (canEdit || canDelete) && (
           <div className="comment-actions">
-            {canEdit && <button className="link small" onClick={() => setEditing(true)}>Editar</button>}
+            {canEdit && <button className="link small" onClick={() => { setDraft(comment.body); setEditing(true); }}>Editar</button>}
             {canDelete && (
               <button className="link small" onClick={() => confirm('Excluir este comentário?') && run(() => api(`/comments/${comment.id}`, { method: 'DELETE' }))}>
                 Excluir

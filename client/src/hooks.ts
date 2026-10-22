@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient, type QueryKey } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { api, qs } from './api';
-import type { Issue, IssueDetail, Project, Sprint, User } from './types';
+import type { EpicProgress, Issue, IssueDetail, Project, ProjectSummary, Sprint, SprintReport, User, Velocity } from './types';
 
 export type IssueFilters = Record<string, string | undefined>;
 
@@ -65,6 +65,7 @@ export function useInvalidateWork() {
       qc.invalidateQueries({ queryKey: ['issue'] }),
       qc.invalidateQueries({ queryKey: ['sprints'] }),
       qc.invalidateQueries({ queryKey: ['projects'] }),
+      qc.invalidateQueries({ queryKey: ['reports'] }),
     ]);
 }
 
@@ -110,4 +111,36 @@ export function useOpenIssue() {
     else next.delete('issue');
     setParams(next);
   };
+}
+
+// Report queries all live under ['reports', …] so one invalidation refreshes every chart.
+
+export function useSummary(projectKey: string) {
+  const tz = new Date().getTimezoneOffset();
+  return useQuery({
+    queryKey: ['reports', 'summary', projectKey],
+    queryFn: () => api<ProjectSummary>(`/projects/${projectKey}/summary?tz=${tz}`),
+  });
+}
+
+export function useVelocity(projectKey: string) {
+  return useQuery({
+    queryKey: ['reports', 'velocity', projectKey],
+    queryFn: () => api<Velocity>(`/projects/${projectKey}/velocity`),
+  });
+}
+
+export function useSprintReport(sprintId: string | undefined) {
+  return useQuery({
+    queryKey: ['reports', 'sprint', sprintId],
+    queryFn: () => api<SprintReport>(`/sprints/${sprintId}/report`),
+    enabled: !!sprintId,
+  });
+}
+
+export function useEpics(projectKey: string) {
+  return useQuery({
+    queryKey: ['reports', 'epics', projectKey],
+    queryFn: () => api<{ epics: EpicProgress[] }>(`/projects/${projectKey}/epics`).then((r) => r.epics),
+  });
 }

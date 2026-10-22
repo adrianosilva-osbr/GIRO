@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { api } from '../api';
 import { useInvalidateWork, useIssues, useSprints } from '../hooks';
+import { isDone } from '../constants';
 import type { Sprint } from '../types';
 import { ErrorText, Field, Modal } from './ui';
 import { useToast } from './Toast';
@@ -153,7 +154,7 @@ export function CompleteSprintModal({ sprint, projectKey, onClose }: { sprint: S
   const planned = sprints.filter((s) => s.status === 'PLANNED');
   const [moveTo, setMoveTo] = useState('backlog');
   const { error, run } = useSprintAction(onClose);
-  const done = issues.filter((i) => i.status === 'DONE').length;
+  const done = issues.filter(isDone).length;
   const open = issues.length - done;
 
   const submit = (e: FormEvent) => {

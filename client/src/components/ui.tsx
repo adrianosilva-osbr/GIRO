@@ -1,6 +1,5 @@
 import { useEffect, type ReactNode } from 'react';
-import type { Status, User } from '../types';
-import { STATUS_LABEL } from '../constants';
+import type { StatusRef, User } from '../types';
 import { Icon } from './Icons';
 
 export function initials(name: string) {
@@ -27,8 +26,9 @@ export function Avatar({ user, size = 24, title }: { user: User | null | undefin
   );
 }
 
-export function StatusLozenge({ status }: { status: Status }) {
-  return <span className={`lozenge lozenge-${status.toLowerCase()}`}>{STATUS_LABEL[status]}</span>;
+export function StatusLozenge({ status }: { status: StatusRef | null | undefined }) {
+  if (!status) return null;
+  return <span className={`lozenge lozenge-${status.category.toLowerCase()}`}>{status.name}</span>;
 }
 
 export function Modal({

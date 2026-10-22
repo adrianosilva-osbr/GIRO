@@ -23,7 +23,10 @@ export async function assertMember(projectId: string, userId: string) {
 }
 
 export async function loadIssue(key: string, userId: string) {
-  const issue = await prisma.issue.findUnique({ where: { key: key.toUpperCase() } });
+  const issue = await prisma.issue.findUnique({
+    where: { key: key.toUpperCase() },
+    include: { statusRef: { select: { key: true, name: true, category: true } } },
+  });
   if (!issue) throw new HttpError(404, 'Issue não encontrada');
   const membership = await assertMember(issue.projectId, userId);
   return { issue, membership };

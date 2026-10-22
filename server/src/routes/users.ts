@@ -10,7 +10,7 @@ usersRouter.get(
   ah(async (req, res) => {
     const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
     const users = await prisma.user.findMany({
-      where: q ? { OR: [{ name: { contains: q } }, { email: { contains: q } }] } : undefined,
+      where: { isSystem: false, ...(q ? { OR: [{ name: { contains: q } }, { email: { contains: q } }] } : {}) },
       select: userSelect,
       orderBy: { name: 'asc' },
       take: 50,

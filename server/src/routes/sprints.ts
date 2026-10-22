@@ -4,6 +4,8 @@ import { prisma } from '../db.js';
 import { ah, HttpError } from '../errors.js';
 import { currentUser } from '../auth.js';
 import { loadProject, loadSprint } from '../access.js';
+import { publishProject } from '../events.js';
+import { logSprintStart } from '../sprintlog.js';
 
 const createSchema = z.object({
   name: z.string().trim().min(1).optional(),
@@ -65,6 +67,7 @@ projectSprintsRouter.post(
         },
       });
     });
+    publishProject(project.id);
     res.status(201).json({ sprint });
   }),
 );
@@ -80,6 +83,7 @@ sprintsRouter.patch(
     if (sprint.status === 'CLOSED') throw new HttpError(400, 'Sprints encerradas não podem ser editadas');
     const data = updateSchema.parse(req.body);
     const updated = await prisma.sprint.update({ where: { id: sprint.id }, data });
+    publishProject(sprint.projectId);
     res.json({ sprint: updated });
   }),
 );
@@ -99,10 +103,16 @@ sprintsRouter.post(
     const startDate = data.startDate ?? new Date();
     const endDate = data.endDate ?? new Date(startDate.getTime() + 14 * DAY);
     if (endDate <= startDate) throw new HttpError(400, 'A data de término deve ser posterior ao início');
-    const updated = await prisma.sprint.update({
-      where: { id: sprint.id },
-      data: { status: 'ACTIVE', name: data.name, goal: data.goal, startDate, endDate },
+    const updated = await prisma.$transaction(async (tx) => {
+      const started = await tx.sprint.update({
+        where: { id: sprint.id },
+        data: { status: 'ACTIVE', name: data.name, goal: data.goal, startDate, endDate },
+      });
+      // The commitment is what the sprint holds right now, stamped at its official start.
+      await logSprintStart(tx, started, startDate);
+      return started;
     });
+    publishProject(sprint.projectId);
     res.json({ sprint: updated });
   }),
 );
@@ -126,15 +136,15 @@ sprintsRouter.post(
 
     const result = await prisma.$transaction(async (tx) => {
       const completed = await tx.issue.count({
-        where: { sprintId: sprint.id, status: 'DONE', type: { not: 'SUBTASK' } },
+        where: { sprintId: sprint.id, statusRef: { category: 'DONE' }, type: { not: 'SUBTASK' } },
       });
       // Subtasks travel with their parent: a finished subtask of an unfinished parent moves too.
       const moved = await tx.issue.updateMany({
         where: {
           sprintId: sprint.id,
           OR: [
-            { type: { not: 'SUBTASK' }, status: { not: 'DONE' } },
-            { type: 'SUBTASK', parent: { status: { not: 'DONE' } } },
+            { type: { not: 'SUBTASK' }, statusRef: { category: { not: 'DONE' } } },
+            { type: 'SUBTASK', parent: { statusRef: { category: { not: 'DONE' } } } },
           ],
         },
         data: { sprintId: targetSprintId },
@@ -145,6 +155,7 @@ sprintsRouter.post(
       });
       return { sprint: updated, completed, moved: moved.count };
     });
+    publishProject(sprint.projectId);
     res.json(result);
   }),
 );
@@ -157,6 +168,7 @@ sprintsRouter.delete(
     if (sprint.status !== 'PLANNED') throw new HttpError(400, 'Apenas sprints planejadas podem ser excluídas');
     // Issues return to the backlog through onDelete: SetNull.
     await prisma.sprint.delete({ where: { id: sprint.id } });
+    publishProject(sprint.projectId);
     res.status(204).end();
   }),
 );

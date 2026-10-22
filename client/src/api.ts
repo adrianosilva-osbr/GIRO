@@ -43,6 +43,21 @@ export async function api<T = unknown>(path: string, options: { method?: string;
   return data as T;
 }
 
+/** Multipart upload of files to an issue; returns the created attachments. */
+export async function uploadFiles<T>(issueKey: string, files: File[]): Promise<T[]> {
+  const form = new FormData();
+  for (const f of files) form.append('files', f, f.name);
+  const token = getToken();
+  const res = await fetch(`/api/issues/${issueKey}/attachments`, {
+    method: 'POST',
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: form,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new ApiError(res.status, data.error || `Erro ${res.status}`);
+  return data.attachments as T[];
+}
+
 export function qs(params: Record<string, string | undefined | null>) {
   const search = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) if (v) search.set(k, v);

@@ -12,7 +12,7 @@ import {
   type DragMoveEvent,
 } from '@dnd-kit/core';
 import { api } from '../api';
-import { CREATABLE_TYPES, TYPE_LABEL, formatDate } from '../constants';
+import { CREATABLE_TYPES, TYPE_LABEL, formatDate, isDone } from '../constants';
 import { issuesKey, useInvalidateWork, useIssues, useMoveIssue, useOpenIssue, useSprints } from '../hooks';
 import { collision, dropTarget, issueDropId, listDropId, rankForDrop, type DropTarget } from '../dnd';
 import type { Issue, IssueType, Project, Sprint } from '../types';
@@ -142,7 +142,7 @@ function IssueGroup({
   const toast = useToast();
   const isTarget = target?.listId === listId;
   const points = issues.reduce((sum, i) => sum + (i.storyPoints ?? 0), 0);
-  const byStatus = (st: string) => issues.filter((i) => i.status === st).length;
+  const byCategory = (c: string) => issues.filter((i) => i.statusRef?.category === c).length;
 
   const deleteSprint = async () => {
     setMenu(false);
@@ -169,9 +169,9 @@ function IssueGroup({
         <span className="muted small">({issues.length} issue{issues.length === 1 ? '' : 's'})</span>
         <div className="spacer" />
         <span className="status-counts" title="A fazer / Em andamento / Concluído">
-          <span className="sc sc-todo">{byStatus('TODO')}</span>
-          <span className="sc sc-progress">{byStatus('IN_PROGRESS') + byStatus('IN_REVIEW')}</span>
-          <span className="sc sc-done">{byStatus('DONE')}</span>
+          <span className="sc sc-todo">{byCategory('TODO')}</span>
+          <span className="sc sc-progress">{byCategory('IN_PROGRESS')}</span>
+          <span className="sc sc-done">{byCategory('DONE')}</span>
         </span>
         {points > 0 && <span className="points" title="Story points">{points}</span>}
         {sprint?.status === 'PLANNED' && (
@@ -252,11 +252,11 @@ function RowContent({ issue }: { issue: Issue }) {
   return (
     <>
       <IssueTypeIcon type={issue.type} />
-      <span className={`key ${issue.status === 'DONE' ? 'done' : ''}`}>{issue.key}</span>
+      <span className={`key ${isDone(issue) ? 'done' : ''}`}>{issue.key}</span>
       <span className="row-title">{issue.title}</span>
       {issue.parent?.type === 'EPIC' && <span className="epic-chip">{issue.parent.title}</span>}
       {issue._count.children > 0 && <span className="muted small" title="Subtarefas">⧉ {issue._count.children}</span>}
-      <StatusLozenge status={issue.status} />
+      <StatusLozenge status={issue.statusRef} />
       <span className="points" title="Story points">{issue.storyPoints ?? '-'}</span>
       <PriorityIcon priority={issue.priority} />
       <Avatar user={issue.assignee} size={24} />

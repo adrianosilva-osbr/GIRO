@@ -18,7 +18,8 @@ export const issueListInclude = {
   assignee: { select: userSelect },
   reporter: { select: userSelect },
   sprint: { select: { id: true, name: true, status: true } },
-  parent: { select: { id: true, key: true, title: true, type: true } },
+  parent: { select: { id: true, key: true, title: true, type: true, parentId: true } },
+  statusRef: { select: { key: true, name: true, category: true } },
   project: { select: { id: true, key: true, name: true } },
   _count: { select: { children: true, comments: true } },
 } as const;

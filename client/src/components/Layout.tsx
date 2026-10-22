@@ -6,10 +6,13 @@ import { Icon, Logo } from './Icons';
 import { Avatar, EmptyState, Spinner } from './ui';
 import { CreateIssueProvider, useCreateIssue } from './CreateIssue';
 import { IssueDetailModal } from './IssueDetail';
+import { NotificationBell } from './Notifications';
+import { useLiveUpdates } from '../live';
 
 /** Shell for every logged-in page: top navigation, global "Criar" modal and the issue modal. */
 export function AppLayout() {
   const { user, loading } = useAuth();
+  useLiveUpdates(user?.id);
   if (loading) return <div className="page-center"><Spinner /></div>;
   if (!user) return <Navigate to="/login" replace />;
   return (
@@ -70,6 +73,7 @@ function TopNav() {
         <Icon name="search" />
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Pesquisar issues" aria-label="Pesquisar issues" />
       </form>
+      <NotificationBell />
       <div className="user-menu" ref={menuRef}>
         <button className="btn-icon" onClick={() => setMenuOpen((o) => !o)} aria-label="Menu do usuário">
           <Avatar user={me} size={30} />
@@ -80,6 +84,9 @@ function TopNav() {
               <b>{me.name}</b>
               <div className="muted small">{me.email}</div>
             </div>
+            <button onClick={() => { setMenuOpen(false); navigate('/profile'); }}>
+              <Icon name="settings" /> Perfil e preferências
+            </button>
             <button onClick={logout}>
               <Icon name="logout" /> Sair
             </button>
@@ -114,9 +121,13 @@ export function ProjectLayout() {
           </div>
         </div>
         <div className="sidebar-section">PLANEJAMENTO</div>
+        <NavLink to="summary"><Icon name="home" /> Resumo</NavLink>
+        <NavLink to="timeline"><Icon name="timeline" /> Cronograma</NavLink>
         <NavLink to="backlog"><Icon name="backlog" /> Backlog</NavLink>
         <NavLink to="board"><Icon name="board" /> Quadro</NavLink>
         <NavLink to="issues"><Icon name="list" /> Issues</NavLink>
+        <div className="sidebar-section">ANÁLISE</div>
+        <NavLink to="reports"><Icon name="chart" /> Relatórios</NavLink>
         <div className="sidebar-section">PROJETO</div>
         <NavLink to="settings"><Icon name="settings" /> Configurações</NavLink>
       </aside>

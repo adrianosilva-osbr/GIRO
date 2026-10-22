@@ -4,6 +4,9 @@ import { prisma } from '../db.js';
 import { ah, HttpError } from '../errors.js';
 import { currentUser, userSelect } from '../auth.js';
 import { loadProject } from '../access.js';
+import { publishProject, refreshMemberships } from '../events.js';
+import { removeFiles } from './attachments.js';
+import { createDefaultStatuses } from '../workflow.js';
 
 const createSchema = z.object({
   key: z
@@ -59,12 +62,16 @@ projectsRouter.post(
     const data = createSchema.parse(req.body);
     const exists = await prisma.project.findUnique({ where: { key: data.key } });
     if (exists) throw new HttpError(409, `Já existe um projeto com a chave ${data.key}`);
-    const project = await prisma.project.create({
-      data: {
-        ...data,
-        leadId: user.id,
-        members: { create: { userId: user.id, role: 'ADMIN' } },
-      },
+    const project = await prisma.$transaction(async (tx) => {
+      const created = await tx.project.create({
+        data: {
+          ...data,
+          leadId: user.id,
+          members: { create: { userId: user.id, role: 'ADMIN' } },
+        },
+      });
+      await createDefaultStatuses(tx, created.id);
+      return created;
     });
     res.status(201).json({ project });
   }),
@@ -80,9 +87,12 @@ projectsRouter.get(
       include: {
         lead: { select: userSelect },
         members: { include: { user: { select: userSelect } }, orderBy: { createdAt: 'asc' } },
+        statuses: { orderBy: { position: 'asc' } },
+        customFields: { orderBy: { position: 'asc' } },
       },
     });
-    res.json({ project: { ...full, myRole: membership.role } });
+    const customFields = full.customFields.map((f) => ({ ...f, options: JSON.parse(f.options) as string[] }));
+    res.json({ project: { ...full, customFields, myRole: membership.role } });
   }),
 );
 
@@ -99,6 +109,7 @@ projectsRouter.patch(
       if (!m) throw new HttpError(400, 'O líder do projeto precisa ser membro');
     }
     const updated = await prisma.project.update({ where: { id: project.id }, data });
+    publishProject(project.id);
     res.json({ project: updated });
   }),
 );
@@ -108,7 +119,9 @@ projectsRouter.delete(
   ah(async (req, res) => {
     const user = currentUser(req);
     const { project } = await loadProject(req.params.key, user.id, { admin: true });
+    const files = await prisma.attachment.findMany({ where: { issue: { projectId: project.id } }, select: { storageKey: true } });
     await prisma.project.delete({ where: { id: project.id } });
+    removeFiles(files.map((f) => f.storageKey));
     res.status(204).end();
   }),
 );
@@ -129,6 +142,8 @@ projectsRouter.post(
       update: {},
       include: { user: { select: userSelect } },
     });
+    await refreshMemberships(target.id);
+    publishProject(project.id);
     res.status(201).json({ member });
   }),
 );
@@ -150,6 +165,7 @@ projectsRouter.patch(
       data: { role },
       include: { user: { select: userSelect } },
     });
+    publishProject(project.id);
     res.json({ member });
   }),
 );
@@ -167,6 +183,8 @@ projectsRouter.delete(
     await prisma.projectMember.delete({
       where: { projectId_userId: { projectId: project.id, userId: req.params.userId } },
     });
+    await refreshMemberships(req.params.userId);
+    publishProject(project.id);
     res.status(204).end();
   }),
 );

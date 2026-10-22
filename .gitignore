@@ -6,3 +6,5 @@ dist/
 .vite/
 coverage/
 *.log
+server/uploads/
+server/test-uploads/

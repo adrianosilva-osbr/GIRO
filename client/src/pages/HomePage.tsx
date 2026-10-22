@@ -7,7 +7,7 @@ import { EmptyState, Spinner } from '../components/ui';
 export function HomePage() {
   const me = useMe();
   const { data: projects = [], isLoading } = useProjects();
-  const assigned = useIssues({ assignee: 'me', status: 'TODO,IN_PROGRESS,IN_REVIEW', sort: 'priority' });
+  const assigned = useIssues({ assignee: 'me', category: 'TODO,IN_PROGRESS', sort: 'priority' });
   const recent = useIssues({ reporter: 'me', sort: 'updated', limit: '8' });
 
   return (

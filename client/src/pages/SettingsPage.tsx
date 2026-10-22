@@ -1,14 +1,47 @@
 import { useState, type FormEvent } from 'react';
-import { useNavigate, useOutletContext } from 'react-router-dom';
+import { useNavigate, useOutletContext, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { api } from '../api';
 import { useMe } from '../auth';
 import type { Project, Role } from '../types';
 import { Avatar, ErrorText, Field } from '../components/ui';
 import { useToast } from '../components/Toast';
+import { WorkflowSettings } from './settings/WorkflowSettings';
+import { FieldsSettings } from './settings/FieldsSettings';
+import { AutomationSettings } from './settings/AutomationSettings';
+
+const TABS = [
+  { id: 'general', label: 'Geral' },
+  { id: 'workflow', label: 'Fluxo de trabalho' },
+  { id: 'fields', label: 'Campos' },
+  { id: 'automation', label: 'Automação' },
+] as const;
 
 export function SettingsPage() {
   const project = useOutletContext<Project>();
+  const [params, setParams] = useSearchParams();
+  const tab = TABS.find((t) => t.id === params.get('tab'))?.id ?? 'general';
+  const isAdmin = project.myRole === 'ADMIN';
+  return (
+    <div className="page narrow settings-page">
+      <h1 className="page-title">Configurações do projeto</h1>
+      {!isAdmin && <p className="notice">Apenas administradores podem alterar as configurações deste projeto.</p>}
+      <div className="tabs settings-tabs">
+        {TABS.map((t) => (
+          <button key={t.id} className={tab === t.id ? 'active' : ''} onClick={() => setParams({ tab: t.id }, { replace: true })}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {tab === 'general' && <GeneralSettings project={project} />}
+      {tab === 'workflow' && <WorkflowSettings project={project} isAdmin={isAdmin} />}
+      {tab === 'fields' && <FieldsSettings project={project} isAdmin={isAdmin} />}
+      {tab === 'automation' && <AutomationSettings project={project} isAdmin={isAdmin} />}
+    </div>
+  );
+}
+
+function GeneralSettings({ project }: { project: Project }) {
   const me = useMe();
   const qc = useQueryClient();
   const toast = useToast();
@@ -61,9 +94,7 @@ export function SettingsPage() {
   };
 
   return (
-    <div className="page narrow">
-      <h1 className="page-title">Configurações do projeto</h1>
-      {!isAdmin && <p className="notice">Apenas administradores podem alterar as configurações deste projeto.</p>}
+    <>
       <ErrorText error={error} />
 
       <section className="settings-section">
@@ -151,6 +182,6 @@ export function SettingsPage() {
           <button className="btn btn-danger" onClick={deleteProject}>Excluir projeto</button>
         </section>
       )}
-    </div>
+    </>
   );
 }

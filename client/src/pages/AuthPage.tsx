@@ -52,6 +52,9 @@ export function AuthPage({ mode }: { mode: 'login' | 'register' }) {
             required
           />
         </Field>
+        {mode === 'login' && (
+          <Link to="/forgot-password" className="small forgot-link">Esqueceu a senha?</Link>
+        )}
         <ErrorText error={error} />
         <button className="btn btn-primary btn-block" disabled={busy}>
           {busy ? 'Aguarde…' : mode === 'login' ? 'Entrar' : 'Criar conta'}
