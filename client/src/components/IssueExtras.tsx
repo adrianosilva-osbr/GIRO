@@ -145,6 +145,8 @@ const LINK_OPTIONS: { value: string; label: string; type: LinkType; direction: '
   { value: 'RELATES:outward', label: 'relaciona-se com', type: 'RELATES', direction: 'outward' },
   { value: 'DUPLICATES:outward', label: 'duplica', type: 'DUPLICATES', direction: 'outward' },
   { value: 'DUPLICATES:inward', label: 'é duplicada por', type: 'DUPLICATES', direction: 'inward' },
+  { value: 'CLONES:outward', label: 'clona', type: 'CLONES', direction: 'outward' },
+  { value: 'CLONES:inward', label: 'é clonada por', type: 'CLONES', direction: 'inward' },
 ];
 
 export function linkLabel(link: Pick<IssueLink, 'type' | 'direction'>) {

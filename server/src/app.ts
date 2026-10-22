@@ -8,7 +8,7 @@ import { eventsHandler } from './events.js';
 import { authRouter } from './routes/auth.js';
 import { usersRouter } from './routes/users.js';
 import { projectsRouter } from './routes/projects.js';
-import { commentsRouter, issuesRouter } from './routes/issues.js';
+import { commentsRouter, issuesRouter, workLogsRouter } from './routes/issues.js';
 import { projectSprintsRouter, sprintsRouter } from './routes/sprints.js';
 import { deleteAttachment, downloadAttachment, uploadAttachments } from './routes/attachments.js';
 import { issueLinksRouter, linksRouter } from './routes/links.js';
@@ -33,6 +33,7 @@ export function createApp() {
   app.use('/api/issues/:key/links', requireAuth, issueLinksRouter);
   app.use('/api/issues', requireAuth, issuesRouter);
   app.use('/api/comments', requireAuth, commentsRouter);
+  app.use('/api/worklogs', requireAuth, workLogsRouter);
   app.use('/api/sprints', requireAuth, sprintReportsRouter);
   app.use('/api/sprints', requireAuth, sprintsRouter);
   app.use('/api/links', requireAuth, linksRouter);

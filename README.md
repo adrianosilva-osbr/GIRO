@@ -25,6 +25,12 @@ Ferramenta web de gestão de projetos e issues no estilo Jira.
 - **Campos personalizados**: texto, número, data ou lista de opções, editáveis no detalhe da issue.
 - **Busca JQL e filtros salvos**: consultas como `type = Bug AND statusCategory != Done ORDER BY priority DESC`, com campos personalizados, funções (`currentUser()`, `openSprints()`, `-7d`) e filtros pessoais ou compartilhados.
 - **Automações**: regras “quando → se (JQL) → então” por projeto, com modelos prontos e histórico de execuções.
+- **Ações em massa**: na busca, selecione várias issues e mude status, responsável, prioridade, sprint ou etiquetas, ou exclua de uma vez.
+- **Exportação**: o resultado de qualquer busca (básica ou JQL) sai em Excel (.xlsx) ou CSV, com campos personalizados e controle de tempo.
+- **Controle de tempo**: estimativa original, tempo restante e registros de trabalho no formato do Jira (`2h 30m`, `1d` = 8h); também pesquisável no JQL (`timeSpent > 4h`).
+- **Clonar e mover**: clone uma issue com subtarefas e campos, ou mova-a para outro projeto (a chave antiga continua funcionando).
+- **Issues bloqueadas**: cartões e listas sinalizam issues bloqueadas por outras ainda não concluídas (JQL: `blocked = true`).
+- **Atalhos de teclado**: `c` cria, `/` busca, `g` + letra navega (`g b` quadro, `g l` backlog…), `j`/`k`/`x`/`o` na lista de issues, `a`/`m`/`l`/`w` dentro da issue e `?` mostra todos.
 
 ## Stack
 

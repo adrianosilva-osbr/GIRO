@@ -22,6 +22,8 @@ import { useToast } from './Toast';
 import { Markdown } from './Markdown';
 import { MarkdownEditor } from './MarkdownEditor';
 import { AttachmentsSection, LinksSection, WatchButton, useUploadToIssue } from './IssueExtras';
+import { BlockedBadge, CloneModal, LogWorkModal, MoveModal, TimeTracking, WorkLogList } from './IssueTools';
+import { useShortcut } from '../shortcuts';
 
 export function IssueDetailModal({ issueKey }: { issueKey: string }) {
   const openIssue = useOpenIssue();
@@ -70,6 +72,15 @@ function IssueDetailBody({ issue, onClose }: { issue: IssueDetailT; onClose(): v
 
   const isAdmin = project?.myRole === 'ADMIN';
   const members = project?.members?.map((m) => m.user) ?? [];
+  const [tool, setTool] = useState<'clone' | 'move' | 'log' | null>(null);
+  const [menu, setMenu] = useState(false);
+  const [commentRequest, setCommentRequest] = useState(0);
+  const isMember = project?.members?.some((m) => m.userId === me.id);
+
+  useShortcut('a', 'Atribuir a issue a mim', () => isMember && issue.assigneeId !== me.id && save({ assigneeId: me.id }));
+  useShortcut('m', 'Comentar na issue', () => setCommentRequest((n) => n + 1));
+  useShortcut('l', 'Registrar horas na issue', () => setTool('log'));
+  useShortcut('w', 'Observar / deixar de observar', () => document.querySelector<HTMLButtonElement>('.watch-btn')?.click());
 
   return (
     <div className="issue-detail">
@@ -90,9 +101,22 @@ function IssueDetailBody({ issue, onClose }: { issue: IssueDetailT; onClose(): v
           <span className="breadcrumb-issue">
             <IssueTypeIcon type={issue.type} size={14} /> {issue.key}
           </span>
+          <BlockedBadge issue={issue} />
         </nav>
         <div className="issue-detail-actions">
           <WatchButton issue={issue} me={me} />
+          <div className="menu-wrap">
+            <button className="btn-icon" title="Mais ações" aria-label="Mais ações" onClick={() => setMenu((m) => !m)}>
+              <Icon name="more" />
+            </button>
+            {menu && (
+              <div className="dropdown right" onMouseLeave={() => setMenu(false)}>
+                <button onClick={() => { setMenu(false); setTool('log'); }}>Registrar horas <kbd>l</kbd></button>
+                <button onClick={() => { setMenu(false); setTool('clone'); }}>Clonar</button>
+                {issue.type !== 'SUBTASK' && <button onClick={() => { setMenu(false); setTool('move'); }}>Mover para outro projeto</button>}
+              </div>
+            )}
+          </div>
           <button className="btn-icon" title="Excluir issue" onClick={remove}>
             <Icon name="trash" />
           </button>
@@ -109,7 +133,7 @@ function IssueDetailBody({ issue, onClose }: { issue: IssueDetailT; onClose(): v
           <AttachmentsSection issue={issue} meId={me.id} isAdmin={isAdmin} />
           {issue.type !== 'SUBTASK' && <ChildIssues issue={issue} />}
           <LinksSection issue={issue} />
-          <ActivitySection issue={issue} members={members} meId={me.id} isAdmin={isAdmin} />
+          <ActivitySection issue={issue} members={members} meId={me.id} isAdmin={isAdmin} commentRequest={commentRequest} />
         </div>
 
         <aside className="issue-side">
@@ -248,6 +272,7 @@ function IssueDetailBody({ issue, onClose }: { issue: IssueDetailT; onClose(): v
               />
             </Detail>
           </div>
+          <TimeTracking issue={issue} onEdit={save} />
           {project?.customFields && project.customFields.length > 0 && (
             <div className="details-box">
               <h4>Campos personalizados</h4>
@@ -262,6 +287,9 @@ function IssueDetailBody({ issue, onClose }: { issue: IssueDetailT; onClose(): v
               ))}
             </div>
           )}
+          {tool === 'clone' && <CloneModal issue={issue} onClose={() => setTool(null)} />}
+          {tool === 'move' && <MoveModal issue={issue} onClose={() => setTool(null)} />}
+          {tool === 'log' && <LogWorkModal issue={issue} onClose={() => setTool(null)} />}
           <div className="meta-dates muted small">
             <div>Criado {formatDateTime(issue.createdAt)}</div>
             <div>Atualizado {formatDateTime(issue.updatedAt)}</div>
@@ -479,8 +507,25 @@ function ChildIssues({ issue }: { issue: IssueDetailT }) {
   );
 }
 
-function ActivitySection({ issue, members, meId, isAdmin }: { issue: IssueDetailT; members: User[]; meId: string; isAdmin: boolean }) {
-  const [tab, setTab] = useState<'comments' | 'history'>('comments');
+function ActivitySection({
+  issue,
+  members,
+  meId,
+  isAdmin,
+  commentRequest,
+}: {
+  issue: IssueDetailT;
+  members: User[];
+  meId: string;
+  isAdmin: boolean;
+  commentRequest: number;
+}) {
+  const [tab, setTab] = useState<'comments' | 'history' | 'worklog'>('comments');
+  const [prevRequest, setPrevRequest] = useState(commentRequest);
+  if (commentRequest !== prevRequest) {
+    setPrevRequest(commentRequest);
+    setTab('comments');
+  }
   return (
     <section className="issue-section">
       <h3>Atividade</h3>
@@ -488,12 +533,17 @@ function ActivitySection({ issue, members, meId, isAdmin }: { issue: IssueDetail
         <button className={tab === 'comments' ? 'active' : ''} onClick={() => setTab('comments')}>
           Comentários ({issue.comments.length})
         </button>
+        <button className={tab === 'worklog' ? 'active' : ''} onClick={() => setTab('worklog')}>
+          Registros de trabalho ({issue.workLogs.length})
+        </button>
         <button className={tab === 'history' ? 'active' : ''} onClick={() => setTab('history')}>
           Histórico
         </button>
       </div>
       {tab === 'comments' ? (
-        <Comments issue={issue} members={members} meId={meId} isAdmin={isAdmin} />
+        <Comments issue={issue} members={members} meId={meId} isAdmin={isAdmin} openRequest={commentRequest} />
+      ) : tab === 'worklog' ? (
+        <WorkLogList issue={issue} meId={meId} isAdmin={isAdmin} />
       ) : (
         <ul className="history">
           {issue.activities.map((a) => (
@@ -512,6 +562,10 @@ function HistoryItem({ activity: a }: { activity: Activity }) {
   else if (a.field === 'description') text = 'atualizou a descrição';
   else if (a.field === 'attachment') {
     text = a.toValue ? <>anexou <b>{a.toValue}</b></> : <>removeu o anexo <span className="history-from">{a.fromValue}</span></>;
+  } else if (a.field === 'worklog') {
+    text = a.toValue ? <>registrou <b>{a.toValue}</b> de trabalho</> : <>excluiu um registro de <span className="history-from">{a.fromValue}</span></>;
+  } else if (a.field === 'project') {
+    text = <>moveu a issue de <span className="history-from">{a.fromValue}</span> para <b>{a.toValue}</b></>;
   } else if (a.field === 'link') {
     text = a.toValue ? <>vinculou: esta issue <b>{a.toValue}</b></> : <>removeu o vínculo <span className="history-from">{a.fromValue}</span></>;
   } else {
@@ -537,9 +591,26 @@ function HistoryItem({ activity: a }: { activity: Activity }) {
   );
 }
 
-function Comments({ issue, members, meId, isAdmin }: { issue: IssueDetailT; members: User[]; meId: string; isAdmin: boolean }) {
+function Comments({
+  issue,
+  members,
+  meId,
+  isAdmin,
+  openRequest,
+}: {
+  issue: IssueDetailT;
+  members: User[];
+  meId: string;
+  isAdmin: boolean;
+  openRequest: number;
+}) {
   const [body, setBody] = useState('');
   const [open, setOpen] = useState(false);
+  const [prevRequest, setPrevRequest] = useState(openRequest);
+  if (openRequest !== prevRequest) {
+    setPrevRequest(openRequest);
+    setOpen(true);
+  }
   const [saving, setSaving] = useState(false);
   const invalidate = useInvalidateWork();
   const upload = useUploadToIssue(issue.key);

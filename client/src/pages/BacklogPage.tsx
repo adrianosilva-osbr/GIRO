@@ -21,6 +21,7 @@ import { Avatar, Spinner, StatusLozenge } from '../components/ui';
 import { QuickFilters, useQuickFilters } from '../components/QuickFilters';
 import { CompleteSprintModal, EditSprintModal, StartSprintModal } from '../components/SprintModals';
 import { useToast } from '../components/Toast';
+import { BlockedBadge } from '../components/IssueTools';
 
 const BACKLOG = 'backlog';
 
@@ -254,6 +255,7 @@ function RowContent({ issue }: { issue: Issue }) {
       <IssueTypeIcon type={issue.type} />
       <span className={`key ${isDone(issue) ? 'done' : ''}`}>{issue.key}</span>
       <span className="row-title">{issue.title}</span>
+      <BlockedBadge issue={issue} compact />
       {issue.parent?.type === 'EPIC' && <span className="epic-chip">{issue.parent.title}</span>}
       {issue._count.children > 0 && <span className="muted small" title="Subtarefas">⧉ {issue._count.children}</span>}
       <StatusLozenge status={issue.statusRef} />

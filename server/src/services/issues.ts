@@ -9,6 +9,8 @@ import { extractMentions, notify, plainText, watch, watcherIds } from '../notify
 import { logSprintChanges } from '../sprintlog.js';
 import { initialStatus, isDone } from '../workflow.js';
 import { fireAutomations, type AutomationCtx } from '../automation.js';
+import { formatDuration } from '../duration.js';
+import { removeFiles } from '../routes/attachments.js';
 
 /*
  * Issue creation, updates and comments live here (not in the routes) because automations
@@ -53,6 +55,9 @@ export const updateSchema = z.object({
   parentId: nullableId.optional(),
   rank: z.number().finite().optional(),
   customFields: customFieldsSchema.optional(),
+  // Minutes
+  originalEstimate: z.number().int().min(0).max(1_000_000).nullable().optional(),
+  remainingEstimate: z.number().int().min(0).max(1_000_000).nullable().optional(),
 });
 
 export type CreateInput = z.infer<typeof createSchema>;
@@ -313,6 +318,18 @@ export async function updateIssue(issue: LoadedIssue, data: UpdateInput, actor: 
     track('sprint', from?.name, to?.name);
   }
   if (data.rank !== undefined) update.rank = data.rank;
+  if (data.originalEstimate !== undefined && data.originalEstimate !== issue.originalEstimate) {
+    update.originalEstimate = data.originalEstimate;
+    track('originalEstimate', formatDuration(issue.originalEstimate), formatDuration(data.originalEstimate));
+    // Like Jira: the first estimate also becomes the remaining estimate.
+    if (issue.remainingEstimate === null && data.remainingEstimate === undefined && data.originalEstimate !== null) {
+      update.remainingEstimate = Math.max(0, data.originalEstimate - issue.timeSpent);
+    }
+  }
+  if (data.remainingEstimate !== undefined && data.remainingEstimate !== issue.remainingEstimate) {
+    update.remainingEstimate = data.remainingEstimate;
+    track('remainingEstimate', formatDuration(issue.remainingEstimate), formatDuration(data.remainingEstimate));
+  }
 
   const updated = await prisma.$transaction(async (tx) => {
     if (data.customFields && Object.keys(data.customFields).length) {
@@ -386,4 +403,236 @@ export async function addComment(issue: Issue, body: string, actor: Actor, ctx =
   publishProject(issue.projectId);
   await fireAutomations({ type: 'comment_added', issueId: issue.id, projectId: issue.projectId, actorId: actor.id }, ctx);
   return comment;
+}
+
+// ---------------------------------------------------------------- delete
+
+export async function deleteIssue(issue: LoadedIssue) {
+  const files = await prisma.attachment.findMany({
+    where: { OR: [{ issueId: issue.id }, { issue: { parentId: issue.id, type: 'SUBTASK' } }] },
+    select: { storageKey: true },
+  });
+  await logSprintChanges(prisma, issue, null);
+  await prisma.$transaction([
+    prisma.issue.deleteMany({ where: { parentId: issue.id, type: 'SUBTASK' } }),
+    prisma.issue.delete({ where: { id: issue.id } }),
+  ]);
+  removeFiles(files.map((f) => f.storageKey));
+  publishProject(issue.projectId);
+}
+
+// ---------------------------------------------------------------- time tracking
+
+export const workLogSchema = z.object({
+  minutes: z.number().int().min(1, 'Informe o tempo gasto').max(60 * 24 * 31),
+  startedAt: z.coerce.date().optional(),
+  description: z.string().max(2000).optional().default(''),
+  // 'auto' subtracts the logged time; a number sets the remaining estimate explicitly.
+  remaining: z.union([z.literal('auto'), z.number().int().min(0)]).default('auto'),
+});
+
+function adjustRemaining(issue: { remainingEstimate: number | null; originalEstimate: number | null }, delta: number) {
+  const base = issue.remainingEstimate ?? issue.originalEstimate;
+  return base === null ? null : Math.max(0, base - delta);
+}
+
+export async function logWork(issue: LoadedIssue, data: z.infer<typeof workLogSchema>, actor: Actor) {
+  const remaining = data.remaining === 'auto' ? adjustRemaining(issue, data.minutes) : data.remaining;
+  const log = await prisma.$transaction(async (tx) => {
+    const created = await tx.workLog.create({
+      data: { issueId: issue.id, userId: actor.id, minutes: data.minutes, startedAt: data.startedAt ?? new Date(), description: data.description },
+      include: { user: { select: userSelect } },
+    });
+    await tx.issue.update({
+      where: { id: issue.id },
+      data: { timeSpent: { increment: data.minutes }, remainingEstimate: remaining },
+    });
+    await tx.activity.create({
+      data: { issueId: issue.id, userId: actor.id, action: 'updated', field: 'worklog', toValue: formatDuration(data.minutes) },
+    });
+    return created;
+  });
+  publishProject(issue.projectId);
+  return log;
+}
+
+export async function updateWorkLog(logId: string, data: { minutes?: number; startedAt?: Date; description?: string }) {
+  const log = await prisma.workLog.findUniqueOrThrow({ where: { id: logId }, include: { issue: true } });
+  const delta = data.minutes !== undefined ? data.minutes - log.minutes : 0;
+  const updated = await prisma.$transaction(async (tx) => {
+    const result = await tx.workLog.update({ where: { id: log.id }, data, include: { user: { select: userSelect } } });
+    if (delta) {
+      const remaining = log.issue.remainingEstimate === null ? null : Math.max(0, log.issue.remainingEstimate - delta);
+      await tx.issue.update({ where: { id: log.issueId }, data: { timeSpent: { increment: delta }, remainingEstimate: remaining } });
+    }
+    return result;
+  });
+  publishProject(log.issue.projectId);
+  return updated;
+}
+
+export async function deleteWorkLog(logId: string, actor: Actor) {
+  const log = await prisma.workLog.findUniqueOrThrow({ where: { id: logId }, include: { issue: true } });
+  await prisma.$transaction([
+    prisma.workLog.delete({ where: { id: log.id } }),
+    prisma.issue.update({
+      where: { id: log.issueId },
+      // The time goes back to the remaining estimate, like Jira's "adjust automatically".
+      data: {
+        timeSpent: { decrement: log.minutes },
+        remainingEstimate: log.issue.remainingEstimate === null ? null : log.issue.remainingEstimate + log.minutes,
+      },
+    }),
+    prisma.activity.create({
+      data: { issueId: log.issueId, userId: actor.id, action: 'updated', field: 'worklog', fromValue: formatDuration(log.minutes) },
+    }),
+  ]);
+  publishProject(log.issue.projectId);
+}
+
+// ---------------------------------------------------------------- clone
+
+export const cloneSchema = z.object({
+  title: z.string().trim().min(1).optional(),
+  includeSubtasks: z.boolean().default(true),
+});
+
+export async function cloneIssue(issue: LoadedIssue, opts: z.infer<typeof cloneSchema>, actor: Actor) {
+  const project = await prisma.project.findUniqueOrThrow({ where: { id: issue.projectId } });
+  const values = await prisma.customFieldValue.findMany({ where: { issueId: issue.id } });
+  const sprint = issue.sprintId ? await prisma.sprint.findUnique({ where: { id: issue.sprintId } }) : null;
+  const base = (src: Issue) => ({
+    projectKey: project.key,
+    description: src.description,
+    type: src.type as CreateInput['type'],
+    priority: src.priority as CreateInput['priority'],
+    storyPoints: src.storyPoints,
+    labels: src.labels.split(',').filter(Boolean),
+    dueDate: src.dueDate,
+    startDate: src.startDate,
+    assigneeId: src.assigneeId,
+  });
+  const clone = await createIssue(
+    project,
+    {
+      ...base(issue),
+      title: opts.title ?? `CLONE - ${issue.title}`,
+      // A closed sprint can't receive issues; the clone then starts in the backlog.
+      sprintId: sprint && sprint.status !== 'CLOSED' ? sprint.id : null,
+      parentId: issue.parentId,
+      customFields: Object.fromEntries(values.map((v) => [v.fieldId, v.value])),
+    },
+    actor,
+  );
+  await prisma.issueLink.create({ data: { type: 'CLONES', sourceId: clone.id, targetId: issue.id, createdById: actor.id } });
+  if (opts.includeSubtasks && issue.type !== 'SUBTASK') {
+    const subtasks = await prisma.issue.findMany({ where: { parentId: issue.id, type: 'SUBTASK' }, orderBy: { rank: 'asc' } });
+    for (const st of subtasks) await createIssue(project, { ...base(st), title: st.title, parentId: clone.id }, actor);
+  }
+  return clone;
+}
+
+// ---------------------------------------------------------------- move to another project
+
+export const moveSchema = z.object({
+  projectKey: z.string().min(1),
+  // Target status key; defaults to the same key, else the first status of the same category.
+  status: z.string().optional(),
+});
+
+async function targetStatus(db: Prisma.TransactionClient, projectId: string, from: { key: string; category: string } | null, requested?: string) {
+  const statuses = await db.projectStatus.findMany({ where: { projectId }, orderBy: { position: 'asc' } });
+  if (requested) {
+    const s = statuses.find((x) => x.key === requested);
+    if (!s) throw new HttpError(400, 'Status inválido no projeto de destino');
+    return s;
+  }
+  const s = statuses.find((x) => x.key === from?.key) ?? statuses.find((x) => x.category === from?.category) ?? statuses[0];
+  if (!s) throw new HttpError(400, 'O projeto de destino não tem status configurados');
+  return s;
+}
+
+/**
+ * Moves an issue (and its subtasks) to another project: new key (the old one keeps working),
+ * mapped status, custom fields kept when the target has a field with the same name and type.
+ * Sprint and epic don't cross projects, so they are cleared.
+ */
+export async function moveIssue(issue: LoadedIssue, target: Project, opts: z.infer<typeof moveSchema>, actor: Actor) {
+  if (issue.projectId === target.id) throw new HttpError(400, 'A issue já está neste projeto');
+  if (issue.type === 'SUBTASK') throw new HttpError(400, 'Subtarefas se movem junto com a issue pai');
+  const source = await prisma.project.findUniqueOrThrow({ where: { id: issue.projectId } });
+  const [sourceFields, targetFields] = await Promise.all([
+    prisma.customField.findMany({ where: { projectId: source.id } }),
+    prisma.customField.findMany({ where: { projectId: target.id } }),
+  ]);
+  const fieldMap = new Map<string, string>();
+  for (const f of sourceFields) {
+    const match = targetFields.find((t) => t.name.toLowerCase() === f.name.toLowerCase() && t.type === f.type);
+    if (match) fieldMap.set(f.id, match.id);
+  }
+  const subtasks = await prisma.issue.findMany({
+    where: { parentId: issue.id, type: 'SUBTASK' },
+    include: { statusRef: { select: { key: true, name: true, category: true } } },
+    orderBy: { rank: 'asc' },
+  });
+
+  const moveOne = async (tx: Prisma.TransactionClient, src: LoadedIssue, parentId: string | null, requested?: string) => {
+    const status = await targetStatus(tx, target.id, src.statusRef, requested);
+    const { issueCounter } = await tx.project.update({ where: { id: target.id }, data: { issueCounter: { increment: 1 } } });
+    const max = await tx.issue.aggregate({ where: { projectId: target.id }, _max: { rank: true } });
+    const keepAssignee = src.assigneeId
+      ? await tx.projectMember.findUnique({ where: { projectId_userId: { projectId: target.id, userId: src.assigneeId } } })
+      : null;
+    const newKey = `${target.key}-${issueCounter}`;
+    await tx.issueKeyAlias.create({ data: { key: src.key, issueId: src.id } });
+    // Custom values: re-point the ones with a matching field, drop the rest.
+    const values = await tx.customFieldValue.findMany({ where: { issueId: src.id } });
+    await tx.customFieldValue.deleteMany({ where: { issueId: src.id } });
+    for (const v of values) {
+      const fieldId = fieldMap.get(v.fieldId);
+      if (fieldId) await tx.customFieldValue.create({ data: { issueId: src.id, fieldId, value: v.value } });
+    }
+    const wasDone = src.statusRef?.category === 'DONE';
+    const nowDone = status.category === 'DONE';
+    const moved = await tx.issue.update({
+      where: { id: src.id },
+      data: {
+        projectId: target.id,
+        number: issueCounter,
+        key: newKey,
+        status: status.key,
+        resolvedAt: wasDone === nowDone ? undefined : nowDone ? new Date() : null,
+        sprintId: null,
+        parentId,
+        assigneeId: keepAssignee ? src.assigneeId : null,
+        rank: (max._max.rank ?? 0) + 1,
+      },
+      include: issueListInclude,
+    });
+    await logSprintChanges(tx, src, moved);
+    await tx.activity.create({
+      data: {
+        issueId: src.id,
+        userId: actor.id,
+        action: 'updated',
+        field: 'project',
+        fromValue: `${source.name} (${src.key})`,
+        toValue: `${target.name} (${newKey})`,
+      },
+    });
+    return moved;
+  };
+
+  const moved = await prisma.$transaction(
+    async (tx) => {
+      const main = await moveOne(tx, issue, null, opts.status);
+      for (const st of subtasks) await moveOne(tx, st, issue.id);
+      // Issues of a moved epic stay behind; epics don't span projects.
+      if (issue.type === 'EPIC') await tx.issue.updateMany({ where: { parentId: issue.id, projectId: source.id }, data: { parentId: null } });
+      return main;
+    },
+    { timeout: 20_000 },
+  );
+  publishProject(source.id, target.id);
+  return moved;
 }

@@ -9,6 +9,9 @@ import type { Issue, SavedFilter, Sprint, User } from '../types';
 import { Icon, IssueTypeIcon, PriorityIcon } from '../components/Icons';
 import { Avatar, EmptyState, ErrorText, Field, Modal, Spinner, StatusLozenge } from '../components/ui';
 import { useToast } from '../components/Toast';
+import { BulkBar, ExportMenu } from '../components/BulkActions';
+import { BlockedBadge } from '../components/IssueTools';
+import { useShortcut } from '../shortcuts';
 
 const BASIC_KEYS = ['q', 'project', 'type', 'status', 'category', 'priority', 'assignee', 'sprint', 'label', 'sort'] as const;
 
@@ -93,6 +96,26 @@ export function IssueSearchPage() {
 
   const query = mode === 'jql' ? { jql: scopeToProject(jql, routeProject), limit: '500' } : basic;
   const { data: issues, isLoading, error, isFetching } = useIssues(query);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [focus, setFocus] = useState(-1);
+  const queryId = JSON.stringify(query);
+  useEffect(() => {
+    setSelected(new Set());
+    setFocus(-1);
+  }, [queryId]);
+  const openIssue = useOpenIssue();
+  const rows = issues ?? [];
+  const toggle = (key: string) =>
+    setSelected((sel) => {
+      const next = new Set(sel);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  useShortcut('j', 'Próxima issue da lista', () => setFocus((f) => Math.min(rows.length - 1, f + 1)), rows.length > 0);
+  useShortcut('k', 'Issue anterior da lista', () => setFocus((f) => Math.max(0, f - 1)), rows.length > 0);
+  useShortcut('x', 'Selecionar a issue em foco', () => rows[focus] && toggle(rows[focus].key), rows.length > 0);
+  useShortcut('o', 'Abrir a issue em foco', () => rows[focus] && openIssue(rows[focus].key), rows.length > 0);
   const current = saved.find((f) => f.id === filterId);
   const builtIn = BUILT_IN.find((f) => f.id === filterId);
   const hasBasicFilters = BASIC_KEYS.some((k) => k !== 'sort' && params.get(k));
@@ -183,6 +206,7 @@ export function IssueSearchPage() {
                 <button className="btn btn-subtle" onClick={deleteCurrent}><Icon name="trash" /> Excluir</button>
               </>
             )}
+            <ExportMenu query={query} />
             <button className="btn" onClick={() => setSaving(true)}>Salvar filtro</button>
           </div>
         </div>
@@ -245,8 +269,23 @@ export function IssueSearchPage() {
           <div className="jql-error"><ErrorText error={error} /></div>
         ) : issues?.length ? (
           <div className={isFetching ? 'refreshing' : ''}>
-            <div className="muted small mb-sm">{issues.length} issue(s){issues.length === 500 ? ' (limite de 500 resultados)' : ''}</div>
-            <IssueTable issues={issues} showProject={!basic.project && !routeProject} showSprint />
+            {selected.size > 0 ? (
+              <BulkBar
+                issues={issues.filter((i) => selected.has(i.key))}
+                onDone={() => setSelected(new Set())}
+                onClear={() => setSelected(new Set())}
+              />
+            ) : (
+              <div className="muted small mb-sm">
+                {issues.length} issue(s){issues.length === 500 ? ' (limite de 500 resultados)' : ''} · marque as caixas para alterar várias de uma vez
+              </div>
+            )}
+            <IssueTable
+              issues={issues}
+              showProject={!basic.project && !routeProject}
+              showSprint
+              selection={{ selected, toggle, setAll: (keys) => setSelected(new Set(keys)), focus }}
+            />
           </div>
         ) : (
           <EmptyState title="Nenhuma issue encontrada">Tente ajustar os filtros.</EmptyState>
@@ -424,12 +463,40 @@ function JqlHelp() {
   );
 }
 
-export function IssueTable({ issues, showProject, showSprint }: { issues: Issue[]; showProject?: boolean; showSprint?: boolean }) {
+interface Selection {
+  selected: Set<string>;
+  toggle(key: string): void;
+  setAll(keys: string[]): void;
+  focus: number;
+}
+
+export function IssueTable({
+  issues,
+  showProject,
+  showSprint,
+  selection,
+}: {
+  issues: Issue[];
+  showProject?: boolean;
+  showSprint?: boolean;
+  selection?: Selection;
+}) {
   const openIssue = useOpenIssue();
+  const allSelected = !!selection && issues.length > 0 && issues.every((i) => selection.selected.has(i.key));
   return (
     <table className="table issue-table">
       <thead>
         <tr>
+          {selection && (
+            <th style={{ width: 32 }}>
+              <input
+                type="checkbox"
+                aria-label="Selecionar todas"
+                checked={allSelected}
+                onChange={() => selection.setAll(allSelected ? [] : issues.map((i) => i.key))}
+              />
+            </th>
+          )}
           <th style={{ width: 36 }}>Tipo</th>
           <th style={{ width: 90 }}>Chave</th>
           <th>Resumo</th>
@@ -442,13 +509,24 @@ export function IssueTable({ issues, showProject, showSprint }: { issues: Issue[
         </tr>
       </thead>
       <tbody>
-        {issues.map((i) => (
-          <tr key={i.id} className="clickable" onClick={() => openIssue(i.key)}>
+        {issues.map((i, index) => (
+          <tr
+            key={i.id}
+            className={`clickable ${selection?.selected.has(i.key) ? 'selected' : ''} ${selection?.focus === index ? 'focused' : ''}`}
+            onClick={() => openIssue(i.key)}
+            ref={(el) => { if (el && selection?.focus === index) el.scrollIntoView({ block: 'nearest' }); }}
+          >
+            {selection && (
+              <td onClick={(e) => e.stopPropagation()}>
+                <input type="checkbox" aria-label={`Selecionar ${i.key}`} checked={selection.selected.has(i.key)} onChange={() => selection.toggle(i.key)} />
+              </td>
+            )}
             <td><IssueTypeIcon type={i.type} /></td>
             <td className={`key ${isDone(i) ? 'done' : ''}`}>{i.key}</td>
             <td>
               {i.title}
               {i.labels.map((l) => <span key={l} className="label-chip">{l}</span>)}
+              {i.blockedBy > 0 && <> <BlockedBadge issue={i} /></>}
             </td>
             {showProject && <td className="muted">{i.project.name}</td>}
             <td><StatusLozenge status={i.statusRef} /></td>

@@ -8,6 +8,7 @@ import { CreateIssueProvider, useCreateIssue } from './CreateIssue';
 import { IssueDetailModal } from './IssueDetail';
 import { NotificationBell } from './Notifications';
 import { useLiveUpdates } from '../live';
+import { ShortcutProvider, useShortcut, useShortcutHelp } from '../shortcuts';
 
 /** Shell for every logged-in page: top navigation, global "Criar" modal and the issue modal. */
 export function AppLayout() {
@@ -16,13 +17,15 @@ export function AppLayout() {
   if (loading) return <div className="page-center"><Spinner /></div>;
   if (!user) return <Navigate to="/login" replace />;
   return (
-    <CreateIssueProvider>
-      <TopNav />
-      <div className="app-body">
-        <Outlet />
-      </div>
-      <IssueModalHost />
-    </CreateIssueProvider>
+    <ShortcutProvider>
+      <CreateIssueProvider>
+        <TopNav />
+        <div className="app-body">
+          <Outlet />
+        </div>
+        <IssueModalHost />
+      </CreateIssueProvider>
+    </ShortcutProvider>
   );
 }
 
@@ -42,6 +45,14 @@ function TopNav() {
   const [q, setQ] = useState('');
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const showHelp = useShortcutHelp();
+
+  useShortcut('c', 'Criar issue', () => openCreate({ projectKey: key }));
+  useShortcut('/', 'Pesquisar issues', () => searchRef.current?.focus());
+  useShortcut('g d', 'Ir para Seu trabalho', () => navigate('/'));
+  useShortcut('g p', 'Ir para Projetos', () => navigate('/projects'));
+  useShortcut('g f', 'Ir para Filtros', () => navigate('/filters'));
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -71,7 +82,7 @@ function TopNav() {
       <div className="spacer" />
       <form onSubmit={search} className="search-box">
         <Icon name="search" />
-        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Pesquisar issues" aria-label="Pesquisar issues" />
+        <input ref={searchRef} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Pesquisar issues ( / )" aria-label="Pesquisar issues" />
       </form>
       <NotificationBell />
       <div className="user-menu" ref={menuRef}>
@@ -87,6 +98,9 @@ function TopNav() {
             <button onClick={() => { setMenuOpen(false); navigate('/profile'); }}>
               <Icon name="settings" /> Perfil e preferências
             </button>
+            <button onClick={() => { setMenuOpen(false); showHelp(); }}>
+              <Icon name="edit" /> Atalhos de teclado <kbd>?</kbd>
+            </button>
             <button onClick={logout}>
               <Icon name="logout" /> Sair
             </button>
@@ -100,6 +114,14 @@ function TopNav() {
 export function ProjectLayout() {
   const { key } = useParams();
   const { data: project, error, isLoading } = useProject(key);
+  const navigate = useNavigate();
+  const go = (page: string) => () => navigate(`/projects/${key}/${page}`);
+  useShortcut('g s', 'Ir para o Resumo do projeto', go('summary'));
+  useShortcut('g t', 'Ir para o Cronograma', go('timeline'));
+  useShortcut('g l', 'Ir para o Backlog', go('backlog'));
+  useShortcut('g b', 'Ir para o Quadro', go('board'));
+  useShortcut('g i', 'Ir para as Issues do projeto', go('issues'));
+  useShortcut('g r', 'Ir para os Relatórios', go('reports'));
 
   if (isLoading) return <div className="page-center"><Spinner /></div>;
   if (error || !project) {

@@ -1,17 +1,33 @@
 import { Router } from 'express';
-import type { Prisma } from '@prisma/client';
+import type { Prisma, User } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from '../db.js';
 import { ah, HttpError } from '../errors.js';
 import { currentUser, userSelect } from '../auth.js';
 import { assertMember, loadIssue, loadProject } from '../access.js';
-import { issueListInclude, normalizeLabel, serializeIssue } from '../serialize.js';
+import { decodeLabels, issueListInclude, normalizeLabel, serializeIssue } from '../serialize.js';
 import { publishProject } from '../events.js';
 import { extractMentions, notify, plainText, watch } from '../notify.js';
-import { removeFiles, serializeAttachment } from './attachments.js';
-import { logSprintChanges } from '../sprintlog.js';
+import { serializeAttachment } from './attachments.js';
 import { JqlError, compileJql, parseJql, sortByPriority } from '../jql.js';
-import { addComment, createIssue, createSchema, updateIssue, updateSchema } from '../services/issues.js';
+import {
+  addComment,
+  cloneIssue,
+  cloneSchema,
+  createIssue,
+  createSchema,
+  deleteIssue,
+  deleteWorkLog,
+  logWork,
+  moveIssue,
+  moveSchema,
+  updateIssue,
+  updateSchema,
+  updateWorkLog,
+  workLogSchema,
+} from '../services/issues.js';
+import { formatDuration } from '../duration.js';
+import { buildCsv, buildXlsx, type Cell } from '../xlsx.js';
 
 const commentSchema = z.object({ body: z.string().trim().min(1, 'O comentário está vazio') });
 
@@ -64,44 +80,153 @@ function basicFilters(q: Record<string, unknown>, userId: string): Prisma.IssueW
   return and;
 }
 
+/**
+ * Runs a search (JQL or basic filters) limited to the viewer's projects. Shared by the list
+ * and the export so a download always matches what the screen shows.
+ */
+async function searchIssues<I extends Prisma.IssueInclude>(q: Record<string, unknown>, user: User, include: I, maxLimit: number) {
+  const memberships = await prisma.projectMember.findMany({ where: { userId: user.id }, select: { projectId: true } });
+  const projectIds = memberships.map((m) => m.projectId);
+  const and: Prisma.IssueWhereInput[] = [{ projectId: { in: projectIds } }];
+  const limit = Math.min(Number(q.limit) || maxLimit, maxLimit);
+
+  let orderBy: Prisma.IssueOrderByWithRelationInput[];
+  let byPriority: 'asc' | 'desc' | undefined;
+  if (typeof q.jql === 'string' && q.jql.trim()) {
+    try {
+      const compiled = await compileJql(parseJql(q.jql), { userId: user.id, projectIds });
+      and.push(compiled.where);
+      orderBy = compiled.orderBy.length ? compiled.orderBy : compiled.sortByPriority ? [{ rank: 'asc' }] : [{ updatedAt: 'desc' }];
+      byPriority = compiled.sortByPriority;
+    } catch (err) {
+      if (err instanceof JqlError) {
+        throw new HttpError(400, `Erro na consulta (posição ${err.position + 1}): ${err.message}`);
+      }
+      throw err;
+    }
+  } else {
+    and.push(...basicFilters(q, user.id));
+    const sort = typeof q.sort === 'string' ? q.sort : 'rank';
+    orderBy =
+      sort === 'created' ? [{ createdAt: 'desc' }]
+      : sort === 'updated' ? [{ updatedAt: 'desc' }]
+      : sort === 'key' ? [{ projectId: 'asc' }, { number: 'desc' }]
+      : [{ rank: 'asc' }];
+    if (sort === 'priority') byPriority = 'desc';
+  }
+
+  let issues = await prisma.issue.findMany({ where: { AND: and }, include, orderBy, take: limit });
+  if (byPriority) issues = sortByPriority(issues, byPriority);
+  return issues;
+}
+
 issuesRouter.get(
   '/',
   ah(async (req, res) => {
-    const user = currentUser(req);
-    const q = req.query;
-    const memberships = await prisma.projectMember.findMany({ where: { userId: user.id }, select: { projectId: true } });
-    const projectIds = memberships.map((m) => m.projectId);
-    const and: Prisma.IssueWhereInput[] = [{ projectId: { in: projectIds } }];
-    const limit = Math.min(Number(q.limit) || 500, 1000);
-
-    let orderBy: Prisma.IssueOrderByWithRelationInput[];
-    let byPriority: 'asc' | 'desc' | undefined;
-    if (typeof q.jql === 'string' && q.jql.trim()) {
-      try {
-        const compiled = await compileJql(parseJql(q.jql), { userId: user.id, projectIds });
-        and.push(compiled.where);
-        orderBy = compiled.orderBy.length ? compiled.orderBy : compiled.sortByPriority ? [{ rank: 'asc' }] : [{ updatedAt: 'desc' }];
-        byPriority = compiled.sortByPriority;
-      } catch (err) {
-        if (err instanceof JqlError) {
-          return res.status(400).json({ error: `Erro na consulta (posição ${err.position + 1}): ${err.message}`, position: err.position });
-        }
-        throw err;
-      }
-    } else {
-      and.push(...basicFilters(q, user.id));
-      const sort = typeof q.sort === 'string' ? q.sort : 'rank';
-      orderBy =
-        sort === 'created' ? [{ createdAt: 'desc' }]
-        : sort === 'updated' ? [{ updatedAt: 'desc' }]
-        : sort === 'key' ? [{ projectId: 'asc' }, { number: 'desc' }]
-        : [{ rank: 'asc' }];
-      if (sort === 'priority') byPriority = 'desc';
-    }
-
-    let issues = await prisma.issue.findMany({ where: { AND: and }, include: issueListInclude, orderBy, take: limit });
-    if (byPriority) issues = sortByPriority(issues, byPriority);
+    const issues = await searchIssues(req.query, currentUser(req), issueListInclude, 1000);
     res.json({ issues: issues.map(serializeIssue) });
+  }),
+);
+
+/** GET /api/issues/export?format=csv|xlsx&(jql=…|basic filters)&tz=<minutes> */
+issuesRouter.get(
+  '/export',
+  ah(async (req, res) => {
+    const user = currentUser(req);
+    const format = req.query.format === 'xlsx' ? 'xlsx' : 'csv';
+    const tz = Math.max(-840, Math.min(840, Number(req.query.tz) || 0));
+    const issues = await searchIssues(
+      req.query,
+      user,
+      { ...issueListInclude, customValues: { include: { field: { select: { name: true, type: true } } } } },
+      5000,
+    );
+
+    // One column per custom field name across the exported projects.
+    const customNames = [...new Set(issues.flatMap((i) => i.customValues.map((v) => v.field.name)))].sort();
+    const dateOnly = (d: Date | null) => (d ? new Date(d.toISOString().slice(0, 10)) : null);
+    const hours = (m: number | null) => (m == null ? null : Math.round((m / 60) * 100) / 100);
+    const TYPE: Record<string, string> = { EPIC: 'Épico', STORY: 'História', TASK: 'Tarefa', BUG: 'Bug', SUBTASK: 'Subtarefa' };
+    const PRIORITY: Record<string, string> = { HIGHEST: 'Muito alta', HIGH: 'Alta', MEDIUM: 'Média', LOW: 'Baixa', LOWEST: 'Muito baixa' };
+    const CATEGORY: Record<string, string> = { TODO: 'A fazer', IN_PROGRESS: 'Em andamento', DONE: 'Concluído' };
+
+    const header = [
+      'Chave', 'Resumo', 'Tipo', 'Status', 'Categoria do status', 'Prioridade', 'Projeto', 'Responsável', 'Relator',
+      'Sprint', 'Pai / Épico', 'Etiquetas', 'Story points', 'Estimativa original (h)', 'Tempo gasto (h)', 'Restante (h)',
+      'Data de início', 'Data limite', 'Criado', 'Atualizado', 'Concluído em', 'Bloqueada por', 'Descrição',
+      ...customNames,
+    ];
+    const rows: Cell[][] = issues.map((i) => {
+      const custom = new Map(i.customValues.map((v) => [v.field.name, v.field.type === 'NUMBER' ? Number(v.value) : v.field.type === 'DATE' ? new Date(v.value) : v.value]));
+      return [
+        i.key, i.title, TYPE[i.type] ?? i.type, i.statusRef?.name ?? i.status, CATEGORY[i.statusRef?.category ?? ''] ?? '',
+        PRIORITY[i.priority] ?? i.priority, i.project.name, i.assignee?.name ?? '', i.reporter.name,
+        i.sprint?.name ?? '', i.parent ? `${i.parent.key} ${i.parent.title}` : '', decodeLabels(i.labels).join(', '),
+        i.storyPoints, hours(i.originalEstimate), hours(i.timeSpent || null), hours(i.remainingEstimate),
+        dateOnly(i.startDate), dateOnly(i.dueDate), i.createdAt, i.updatedAt, i.resolvedAt, i._count.linksIn || null, i.description,
+        ...customNames.map((n) => custom.get(n) ?? null),
+      ];
+    });
+
+    const stamp = new Date().toISOString().slice(0, 10);
+    if (format === 'xlsx') {
+      const widths = header.map((h) => (h === 'Resumo' || h === 'Descrição' ? 50 : h === 'Pai / Épico' ? 30 : Math.max(12, h.length + 3)));
+      const file = buildXlsx(header, rows, { sheetName: 'Issues', tzOffset: tz, widths });
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="giro-issues-${stamp}.xlsx"`);
+      return res.send(file);
+    }
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="giro-issues-${stamp}.csv"`);
+    res.send(buildCsv(header, rows, tz));
+  }),
+);
+
+const bulkSchema = z.object({
+  keys: z.array(z.string()).min(1, 'Selecione pelo menos uma issue').max(500),
+  delete: z.boolean().optional(),
+  changes: z
+    .object({
+      status: z.string().optional(),
+      assigneeId: z.string().nullable().optional(),
+      priority: updateSchema.shape.priority,
+      sprintId: z.string().nullable().optional(),
+      addLabels: z.array(z.string()).optional(),
+      removeLabels: z.array(z.string()).optional(),
+    })
+    .optional(),
+});
+
+/** Applies the same change to many issues; each one succeeds or fails on its own. */
+issuesRouter.post(
+  '/bulk',
+  ah(async (req, res) => {
+    const user = currentUser(req);
+    const data = bulkSchema.parse(req.body);
+    if (!data.delete && !data.changes) throw new HttpError(400, 'Nada a fazer');
+    const results: { key: string; ok: boolean; error?: string }[] = [];
+    for (const key of data.keys) {
+      try {
+        const { issue } = await loadIssue(key, user.id);
+        if (data.delete) {
+          await deleteIssue(issue);
+        } else {
+          const c = data.changes!;
+          let labels: string[] | undefined;
+          if (c.addLabels?.length || c.removeLabels?.length) {
+            const remove = new Set((c.removeLabels ?? []).map(normalizeLabel));
+            labels = [...decodeLabels(issue.labels).filter((l) => !remove.has(l)), ...(c.addLabels ?? [])];
+          }
+          // Subtasks always follow their parent's sprint, so they are skipped for sprint moves.
+          const sprintId = c.sprintId !== undefined && issue.type !== 'SUBTASK' ? c.sprintId : undefined;
+          await updateIssue(issue, { status: c.status, assigneeId: c.assigneeId, priority: c.priority, sprintId, labels }, user);
+        }
+        results.push({ key: issue.key, ok: true });
+      } catch (err) {
+        results.push({ key, ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    res.json({ results, updated: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok).length });
   }),
 );
 
@@ -121,21 +246,20 @@ issuesRouter.get(
   ah(async (req, res) => {
     const user = currentUser(req);
     const { issue: base } = await loadIssue(req.params.key, user.id);
+    const statusRef = { select: { key: true, name: true, category: true } } as const;
     const issue = await prisma.issue.findUniqueOrThrow({
       where: { id: base.id },
       include: {
         ...issueListInclude,
-        children: {
-          include: { assignee: { select: userSelect }, statusRef: { select: { key: true, name: true, category: true } } },
-          orderBy: { rank: 'asc' },
-        },
+        children: { include: { assignee: { select: userSelect }, statusRef }, orderBy: { rank: 'asc' } },
         comments: { include: { author: { select: userSelect } }, orderBy: { createdAt: 'asc' } },
         activities: { include: { user: { select: userSelect } }, orderBy: { createdAt: 'desc' }, take: 100 },
         attachments: { include: { uploader: { select: userSelect } }, orderBy: { createdAt: 'asc' } },
         watchers: { include: { user: { select: userSelect } }, orderBy: { createdAt: 'asc' } },
-        linksOut: { include: { target: { include: { assignee: { select: userSelect }, statusRef: { select: { key: true, name: true, category: true } } } } }, orderBy: { createdAt: 'asc' } },
-        linksIn: { include: { source: { include: { assignee: { select: userSelect }, statusRef: { select: { key: true, name: true, category: true } } } } }, orderBy: { createdAt: 'asc' } },
+        linksOut: { include: { target: { include: { assignee: { select: userSelect }, statusRef } } }, orderBy: { createdAt: 'asc' } },
+        linksIn: { include: { source: { include: { assignee: { select: userSelect }, statusRef } } }, orderBy: { createdAt: 'asc' } },
         customValues: { select: { fieldId: true, value: true } },
+        workLogs: { include: { user: { select: userSelect } }, orderBy: { startedAt: 'desc' } },
       },
     });
     const { linksOut, linksIn, watchers, attachments, ...rest } = issue;
@@ -172,18 +296,40 @@ issuesRouter.delete(
   ah(async (req, res) => {
     const user = currentUser(req);
     const { issue } = await loadIssue(req.params.key, user.id);
-    const files = await prisma.attachment.findMany({
-      where: { OR: [{ issueId: issue.id }, { issue: { parentId: issue.id, type: 'SUBTASK' } }] },
-      select: { storageKey: true },
-    });
-    await logSprintChanges(prisma, issue, null);
-    await prisma.$transaction([
-      prisma.issue.deleteMany({ where: { parentId: issue.id, type: 'SUBTASK' } }),
-      prisma.issue.delete({ where: { id: issue.id } }),
-    ]);
-    removeFiles(files.map((f) => f.storageKey));
-    publishProject(issue.projectId);
+    await deleteIssue(issue);
     res.status(204).end();
+  }),
+);
+
+issuesRouter.post(
+  '/:key/clone',
+  ah(async (req, res) => {
+    const user = currentUser(req);
+    const { issue } = await loadIssue(req.params.key, user.id);
+    const clone = await cloneIssue(issue, cloneSchema.parse(req.body ?? {}), user);
+    res.status(201).json({ issue: serializeIssue(clone) });
+  }),
+);
+
+issuesRouter.post(
+  '/:key/move',
+  ah(async (req, res) => {
+    const user = currentUser(req);
+    const { issue } = await loadIssue(req.params.key, user.id);
+    const data = moveSchema.parse(req.body);
+    const { project } = await loadProject(data.projectKey, user.id);
+    const moved = await moveIssue(issue, project, data, user);
+    res.json({ issue: serializeIssue(moved) });
+  }),
+);
+
+issuesRouter.post(
+  '/:key/worklogs',
+  ah(async (req, res) => {
+    const user = currentUser(req);
+    const { issue } = await loadIssue(req.params.key, user.id);
+    const log = await logWork(issue, workLogSchema.parse(req.body), user);
+    res.status(201).json({ workLog: log, timeSpent: formatDuration(issue.timeSpent + log.minutes) });
   }),
 );
 
@@ -215,6 +361,39 @@ issuesRouter.delete(
     const { issue } = await loadIssue(req.params.key, user.id);
     await prisma.watcher.deleteMany({ where: { issueId: issue.id, userId: user.id } });
     res.json({ watching: false });
+  }),
+);
+
+/** Mounted at /api/worklogs — the author or a project admin may change a work log. */
+export const workLogsRouter = Router();
+
+async function loadWorkLog(id: string, userId: string) {
+  const log = await prisma.workLog.findUnique({ where: { id }, include: { issue: true } });
+  if (!log) throw new HttpError(404, 'Registro de trabalho não encontrado');
+  const membership = await assertMember(log.issue.projectId, userId);
+  if (log.userId !== userId && membership.role !== 'ADMIN') {
+    throw new HttpError(403, 'Você só pode alterar seus próprios registros de trabalho');
+  }
+  return log;
+}
+
+workLogsRouter.patch(
+  '/:id',
+  ah(async (req, res) => {
+    const user = currentUser(req);
+    const log = await loadWorkLog(req.params.id, user.id);
+    const data = workLogSchema.pick({ minutes: true, startedAt: true, description: true }).partial().parse(req.body);
+    res.json({ workLog: await updateWorkLog(log.id, data) });
+  }),
+);
+
+workLogsRouter.delete(
+  '/:id',
+  ah(async (req, res) => {
+    const user = currentUser(req);
+    const log = await loadWorkLog(req.params.id, user.id);
+    await deleteWorkLog(log.id, user);
+    res.status(204).end();
   }),
 );
 

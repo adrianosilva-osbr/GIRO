@@ -6,13 +6,14 @@ import { currentUser } from '../auth.js';
 import { assertMember, loadIssue } from '../access.js';
 import { publishProject } from '../events.js';
 
-export const LINK_TYPES = ['BLOCKS', 'RELATES', 'DUPLICATES'] as const;
+export const LINK_TYPES = ['BLOCKS', 'RELATES', 'DUPLICATES', 'CLONES'] as const;
 
 /** How a link reads from each side: "LOJA-1 bloqueia LOJA-2" / "LOJA-2 é bloqueada por LOJA-1". */
 export const LINK_LABEL: Record<string, { outward: string; inward: string }> = {
   BLOCKS: { outward: 'bloqueia', inward: 'é bloqueada por' },
   RELATES: { outward: 'relaciona-se com', inward: 'relaciona-se com' },
   DUPLICATES: { outward: 'duplica', inward: 'é duplicada por' },
+  CLONES: { outward: 'clona', inward: 'é clonada por' },
 };
 
 const createSchema = z.object({

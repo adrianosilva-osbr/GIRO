@@ -21,9 +21,16 @@ export const issueListInclude = {
   parent: { select: { id: true, key: true, title: true, type: true, parentId: true } },
   statusRef: { select: { key: true, name: true, category: true } },
   project: { select: { id: true, key: true, name: true } },
-  _count: { select: { children: true, comments: true } },
+  _count: {
+    select: {
+      children: true,
+      comments: true,
+      // Unfinished issues that block this one.
+      linksIn: { where: { type: 'BLOCKS', source: { statusRef: { category: { not: 'DONE' } } } } },
+    },
+  },
 } as const;
 
-export function serializeIssue<T extends { labels: string }>(issue: T) {
-  return { ...issue, labels: decodeLabels(issue.labels) };
+export function serializeIssue<T extends { labels: string; _count?: { linksIn?: number } }>(issue: T) {
+  return { ...issue, labels: decodeLabels(issue.labels), blockedBy: issue._count?.linksIn ?? 0 };
 }

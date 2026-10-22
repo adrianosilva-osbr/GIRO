@@ -81,6 +81,12 @@ export interface Issue {
   statusRef: StatusRef | null;
   priority: Priority;
   storyPoints: number | null;
+  /** Minutes */
+  originalEstimate: number | null;
+  remainingEstimate: number | null;
+  timeSpent: number;
+  /** How many unfinished issues block this one. */
+  blockedBy: number;
   labels: string[];
   dueDate: string | null;
   startDate: string | null;
@@ -127,6 +133,16 @@ export interface IssueDetail extends Issue {
   watchers: User[];
   links: IssueLink[];
   customValues: { fieldId: string; value: string }[];
+  workLogs: WorkLog[];
+}
+
+export interface WorkLog {
+  id: string;
+  minutes: number;
+  startedAt: string;
+  description: string;
+  userId: string;
+  user: User;
 }
 
 export interface Me extends User {
@@ -146,7 +162,7 @@ export interface Attachment {
   createdAt: string;
 }
 
-export type LinkType = 'BLOCKS' | 'RELATES' | 'DUPLICATES';
+export type LinkType = 'BLOCKS' | 'RELATES' | 'DUPLICATES' | 'CLONES';
 
 export interface IssueLink {
   id: string;

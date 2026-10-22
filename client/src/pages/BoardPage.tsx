@@ -21,6 +21,7 @@ import { Avatar, Spinner } from '../components/ui';
 import { QuickFilters, useQuickFilters } from '../components/QuickFilters';
 import { CompleteSprintModal } from '../components/SprintModals';
 import { useToast } from '../components/Toast';
+import { BlockedBadge } from '../components/IssueTools';
 
 type GroupBy = 'none' | 'assignee' | 'epic';
 
@@ -301,7 +302,8 @@ function Card({ issue, listId, indicator }: { issue: Issue; listId: string; indi
 
 function CardView({ issue, overlay }: { issue: Issue; overlay?: boolean }) {
   return (
-    <div className={`card ${overlay ? 'card-overlay' : ''}`}>
+    <div className={`card ${overlay ? 'card-overlay' : ''} ${issue.blockedBy ? 'is-blocked' : ''}`}>
+      {issue.blockedBy > 0 && <BlockedBadge issue={issue} />}
       <div className="card-title">{issue.title}</div>
       {(issue.labels.length > 0 || issue.parent) && (
         <div className="card-tags">

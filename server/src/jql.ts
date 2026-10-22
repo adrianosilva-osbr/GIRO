@@ -1,6 +1,7 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from './db.js';
 import { normalize } from './workflow.js';
+import { parseDuration } from './duration.js';
 
 /*
  * A practical subset of Jira's JQL:
@@ -235,6 +236,10 @@ const FIELD_ALIASES: Record<string, string> = {
   due: 'due', duedate: 'due', prazo: 'due', 'data limite': 'due',
   start: 'start', startdate: 'start', inicio: 'start', 'data de inicio': 'start',
   storypoints: 'points', 'story points': 'points', points: 'points', pontos: 'points',
+  blocked: 'blocked', bloqueada: 'blocked', bloqueado: 'blocked',
+  timespent: 'timeSpent', 'tempo gasto': 'timeSpent', tempogasto: 'timeSpent',
+  originalestimate: 'originalEstimate', estimativa: 'originalEstimate', 'estimativa original': 'originalEstimate',
+  remainingestimate: 'remainingEstimate', restante: 'remainingEstimate', 'tempo restante': 'remainingEstimate',
 };
 
 const TYPE_VALUES: Record<string, string> = {
@@ -261,6 +266,7 @@ const CATEGORY_VALUES: Record<string, string> = {
 export const JQL_FIELDS = [
   'project', 'key', 'type', 'status', 'statusCategory', 'priority', 'assignee', 'reporter', 'watcher', 'sprint',
   'epic', 'labels', 'text', 'summary', 'description', 'created', 'updated', 'resolved', 'due', 'start', 'storyPoints',
+  'blocked', 'timeSpent', 'originalEstimate', 'remainingEstimate',
 ];
 
 // ---------------------------------------------------------------- compiler
@@ -497,6 +503,26 @@ export async function compileJql(parsed: Parsed, ctx: Ctx): Promise<{ where: Whe
         if (eqLike) return membership(field, values, neg, (v) => ({ storyPoints: num(v) }));
         const n = num(values[0]);
         return { storyPoints: op === '>' ? { gt: n } : op === '>=' ? { gte: n } : op === '<' ? { lt: n } : { lte: n } };
+      }
+      case 'blocked': {
+        if (op !== '=' && op !== '!=') throw new JqlError('blocked aceita = true ou = false', pos);
+        const v = normalize(values[0].text);
+        if (!['true', 'false', 'sim', 'nao'].includes(v)) throw new JqlError('Use blocked = true ou blocked = false', values[0].pos);
+        const blocked: Where = { linksIn: { some: { type: 'BLOCKS', source: { statusRef: { category: { not: 'DONE' } } } } } };
+        const wantBlocked = (v === 'true' || v === 'sim') === (op === '=');
+        return wantBlocked ? blocked : { NOT: blocked };
+      }
+      case 'timeSpent':
+      case 'originalEstimate':
+      case 'remainingEstimate': {
+        const col = field as 'timeSpent' | 'originalEstimate' | 'remainingEstimate';
+        if (op === 'is empty' || op === 'is not empty') return empty({ [col]: field === 'timeSpent' ? 0 : null });
+        if (op === '~' || op === '!~' || op === 'in' || op === 'not in') throw new JqlError(`${c.field} aceita =, !=, >, >=, <, <=`, pos);
+        const minutes = parseDuration(values[0].text);
+        if (minutes === null) throw new JqlError(`Duração inválida: "${values[0].text}" (ex.: 2h, 1d 4h, 30m)`, values[0].pos);
+        if (op === '=') return { [col]: minutes };
+        if (op === '!=') return { NOT: { [col]: minutes } };
+        return { [col]: op === '>' ? { gt: minutes } : op === '>=' ? { gte: minutes } : op === '<' ? { lt: minutes } : { lte: minutes } };
       }
     }
     throw new JqlError(`Campo desconhecido: "${c.field}"`, pos);

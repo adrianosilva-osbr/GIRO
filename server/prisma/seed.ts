@@ -209,6 +209,20 @@ async function main() {
 
   await prisma.sprintEvent.createMany({ data: events });
 
+  // The CI pipeline must exist before the cart story can ship.
+  await prisma.issueLink.create({ data: { type: 'BLOCKS', sourceId: ci.id, targetId: adicionar.id, createdById: ana.id } });
+
+  // Time tracking: one issue on track, one over its estimate.
+  await prisma.issue.update({ where: { id: busca.id }, data: { originalEstimate: 3 * 480, timeSpent: 900, remainingEstimate: 600 } });
+  await prisma.issue.update({ where: { id: safari.id }, data: { originalEstimate: 240, timeSpent: 300, remainingEstimate: 60 } });
+  await prisma.workLog.createMany({
+    data: [
+      { issueId: busca.id, userId: carla.id, minutes: 480, startedAt: day(-3), description: 'Índice de busca e API' },
+      { issueId: busca.id, userId: carla.id, minutes: 420, startedAt: day(-1), description: 'Campo de busca no cabeçalho' },
+      { issueId: safari.id, userId: bruno.id, minutes: 300, startedAt: day(-2), description: 'Investigação e correção do decode de imagem' },
+    ],
+  });
+
   await prisma.customFieldValue.createMany({
     data: [
       { issueId: safari.id, fieldId: ambiente.id, value: 'Produção' },
